@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>debug</title>
+    <meta charset='utf-8'>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+</head>
+
+<body>
+<script src='./vt2geojson-browser.min.js'></script>
+<script>
+fetch('./tile.mvt')
+  .then(response => {
+    response.arrayBuffer().then(buffer => {
+      toGeoJSON.toGeoJSON({
+        z: 9,
+        x: 128,
+        y: 188
+      }, buffer, (error, geojson) => {
+        if (error) {
+          console.log('ERROR', error)
+        }
+        console.log(geojson)
+      })
+    })
+  })
+  .catch(error => {
+    console.log(error)
+  })
+</script>
+</body>
+</html>
