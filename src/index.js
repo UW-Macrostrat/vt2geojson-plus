@@ -2,36 +2,34 @@ import { VectorTile } from '@mapbox/vector-tile'
 import Protobuf from 'pbf'
 import zlib from 'browserify-zlib'
 
-import { point, polygon } from '@turf/helpers'
-import explode from '@turf/explode'
-import nearestPoint from '@turf/nearest-point'
-import distance from '@turf/distance'
-import within from '@turf/boolean-within'
 import rewind from '@turf/rewind'
 
-function orderByDistance(lng, lat, geojson) {
+import { point } from '@turf/helpers'
+import within from '@turf/boolean-within'
+import pointToLineDistance from '@turf/point-to-line-distance'
+import { segmentReduce } from '@turf/meta'
+import flatten from '@turf/flatten'
+
+function sortByDistance(lng, lat, geojson) {
   let pt = point([lng, lat])
 
   geojson.features = geojson.features.map(feature => {
-    let vertices = explode(feature)
-    let nearestVertex = nearestPoint(pt, vertices)
+    feature.distance = segmentReduce(feature, (previousSegment, currentSegment) => {
+      let currentDistance = pointToLineDistance(pt, currentSegment)
+      if (currentDistance < previousSegment) {
+        return currentDistance
+      }
+      return previousSegment
+    }, Infinity)
 
-    if (feature.geometry.type === 'MultiPolygon') {
-      let contains = feature.geometry.coordinates.map( poly => {
-        return within(pt, polygon(poly))
-      })
-      if (contains.indexOf(true) > -1) {
-        feature.properties.distance = 0
-      } else {
-        feature.properties.distance = distance(pt, nearestVertex, {'units': 'kilometers'})
+    // Flatten multi geometries and check if any fall within the polygon
+    // NB: As of writing turf/within does not accept multi geometries, thus why flattening is needed
+    flatten(feature).features.forEach(f => {
+      if (within(pt, f)) {
+        feature.distance = 0
       }
-    } else {
-      if (within(pt, feature)) {
-        feature.properties.distance = 0
-      } else {
-        feature.properties.distance = distance(pt, nearestVertex, {'units': 'kilometers'})
-      }
-    }
+    })
+
 
     return feature
   }).sort((a, b) => {
@@ -40,6 +38,8 @@ function orderByDistance(lng, lat, geojson) {
 
   return geojson
 }
+
+
 
 // adapted from https://github.com/mapbox/vt2geojson/blob/master/index.js#L61
 export function toGeoJSON(params, buffer, callback) {
@@ -74,7 +74,7 @@ export function toGeoJSON(params, buffer, callback) {
   }
 
   if (params.lat && params.lng) {
-    collection = orderByDistance(params.lng, params.lat, collection)
+    collection = sortByDistance(params.lng, params.lat, collection)
   }
 
   callback(null, collection)

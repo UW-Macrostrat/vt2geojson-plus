@@ -16,53 +16,46 @@ var _browserifyZlib = require('browserify-zlib');
 
 var _browserifyZlib2 = _interopRequireDefault(_browserifyZlib);
 
+var _rewind = require('@turf/rewind');
+
+var _rewind2 = _interopRequireDefault(_rewind);
+
 var _helpers = require('@turf/helpers');
-
-var _explode = require('@turf/explode');
-
-var _explode2 = _interopRequireDefault(_explode);
-
-var _nearestPoint = require('@turf/nearest-point');
-
-var _nearestPoint2 = _interopRequireDefault(_nearestPoint);
-
-var _distance = require('@turf/distance');
-
-var _distance2 = _interopRequireDefault(_distance);
 
 var _booleanWithin = require('@turf/boolean-within');
 
 var _booleanWithin2 = _interopRequireDefault(_booleanWithin);
 
-var _rewind = require('@turf/rewind');
+var _pointToLineDistance = require('@turf/point-to-line-distance');
 
-var _rewind2 = _interopRequireDefault(_rewind);
+var _pointToLineDistance2 = _interopRequireDefault(_pointToLineDistance);
+
+var _meta = require('@turf/meta');
+
+var _flatten = require('@turf/flatten');
+
+var _flatten2 = _interopRequireDefault(_flatten);
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
-function orderByDistance(lng, lat, geojson) {
+function sortByDistance(lng, lat, geojson) {
   var pt = (0, _helpers.point)([lng, lat]);
 
   geojson.features = geojson.features.map(function (feature) {
-    var vertices = (0, _explode2.default)(feature);
-    var nearestVertex = (0, _nearestPoint2.default)(pt, vertices);
+    feature.distance = (0, _meta.segmentReduce)(feature, function (previousSegment, currentSegment) {
+      var currentDistance = (0, _pointToLineDistance2.default)(pt, currentSegment);
+      if (currentDistance < previousSegment) {
+        return currentDistance;
+      }
+      return previousSegment;
+    }, Infinity);
 
-    if (feature.geometry.type === 'MultiPolygon') {
-      var contains = feature.geometry.coordinates.map(function (poly) {
-        return (0, _booleanWithin2.default)(pt, (0, _helpers.polygon)(poly));
-      });
-      if (contains.indexOf(true) > -1) {
-        feature.properties.distance = 0;
-      } else {
-        feature.properties.distance = (0, _distance2.default)(pt, nearestVertex, { 'units': 'kilometers' });
+    // Flatten multi geometries
+    (0, _flatten2.default)(feature).features.forEach(function (f) {
+      if ((0, _booleanWithin2.default)(pt, f)) {
+        feature.distance = 0;
       }
-    } else {
-      if ((0, _booleanWithin2.default)(pt, feature)) {
-        feature.properties.distance = 0;
-      } else {
-        feature.properties.distance = (0, _distance2.default)(pt, nearestVertex, { 'units': 'kilometers' });
-      }
-    }
+    });
 
     return feature;
   }).sort(function (a, b) {
@@ -72,6 +65,7 @@ function orderByDistance(lng, lat, geojson) {
   return geojson;
 }
 
+// adapted from https://github.com/mapbox/vt2geojson/blob/master/index.js#L61
 function toGeoJSON(params, buffer, callback) {
   // handle zipped buffers
   if (buffer[0] === 0x78 && buffer[1] === 0x9C) {
@@ -104,12 +98,12 @@ function toGeoJSON(params, buffer, callback) {
   }
 
   if (params.lat && params.lng) {
-    collection = orderByDistance(params.lng, params.lat, collection);
+    collection = sortByDistance(params.lng, params.lat, collection);
   }
 
   callback(null, collection);
 }
-},{"@mapbox/vector-tile":3,"@turf/boolean-within":10,"@turf/distance":13,"@turf/explode":14,"@turf/helpers":15,"@turf/nearest-point":18,"@turf/rewind":19,"browserify-zlib":24,"pbf":43}],2:[function(require,module,exports){
+},{"@mapbox/vector-tile":3,"@turf/boolean-within":11,"@turf/flatten":14,"@turf/helpers":16,"@turf/meta":18,"@turf/point-to-line-distance":20,"@turf/rewind":25,"browserify-zlib":34,"pbf":53}],2:[function(require,module,exports){
 'use strict';
 
 module.exports = Point;
@@ -778,1741 +772,7 @@ function bbox(geojson) {
 module.exports = bbox;
 module.exports.default = bbox;
 
-},{"@turf/meta":17}],8:[function(require,module,exports){
-'use strict';
-
-var invariant = require('@turf/invariant');
-
-/**
- * Takes a ring and return true or false whether or not the ring is clockwise or counter-clockwise.
- *
- * @name booleanClockwise
- * @param {Feature<LineString>} line to be evaluated
- * @returns {boolean} true/false
- * @example
- * var clockwiseRing = turf.lineString([[0,0],[1,1],[1,0],[0,0]]);
- * var counterClockwiseRing = turf.lineString([[0,0],[1,0],[1,1],[0,0]]);
- *
- * turf.booleanClockwise(clockwiseRing)
- * //=true
- * turf.booleanClockwise(counterClockwiseRing)
- * //=false
- */
-function booleanClockwise(line) {
-    // validation
-    if (!line) throw new Error('line is required');
-    var type = (line.geometry) ? line.geometry.type : line.type;
-    if (!Array.isArray(line) && type !== 'LineString') throw new Error('geometry must be a LineString');
-
-    var ring = invariant.getCoords(line);
-    var sum = 0;
-    var i = 1;
-    var prev, cur;
-    while (i < ring.length) {
-        prev = cur || ring[0];
-        cur = ring[i];
-        sum += ((cur[0] - prev[0]) * (cur[1] + prev[1]));
-        i++;
-    }
-    return sum > 0;
-}
-
-module.exports = booleanClockwise;
-module.exports.default = booleanClockwise;
-
-},{"@turf/invariant":16}],9:[function(require,module,exports){
-'use strict';
-
-var invariant = require('@turf/invariant');
-var helpers = require('@turf/helpers');
-
-/**
- * Returns true if a point is on a line. Accepts a optional parameter to ignore the start and end vertices of the linestring.
- *
- * @name booleanPointOnLine
- * @param {Coord} pt GeoJSON Point
- * @param {Feature<LineString>} line GeoJSON LineString
- * @param {Object} [options={}] Optional parameters
- * @param {boolean} [options.ignoreEndVertices=false] whether to ignore the start and end vertices.
- * @returns {boolean} true/false
- * @example
- * var pt = turf.point([0, 0]);
- * var line = turf.lineString([[-1, -1],[1, 1],[1.5, 2.2]]);
- * var isPointOnLine = turf.booleanPointOnLine(pt, line);
- * //=true
- */
-function booleanPointOnLine(pt, line, options) {
-    // Optional parameters
-    options = options || {};
-    var ignoreEndVertices = options.ignoreEndVertices;
-    if (!helpers.isObject(options)) throw new Error('invalid options');
-
-    // Validate input
-    if (!pt) throw new Error('pt is required');
-    if (!line) throw new Error('line is required');
-
-    // Normalize inputs
-    var ptCoords = invariant.getCoord(pt);
-    var lineCoords = invariant.getCoords(line);
-
-    // Main
-    for (var i = 0; i < lineCoords.length - 1; i++) {
-        var ignoreBoundary = false;
-        if (ignoreEndVertices) {
-            if (i === 0) ignoreBoundary = 'start';
-            if (i === lineCoords.length - 2) ignoreBoundary = 'end';
-            if (i === 0 && i + 1 === lineCoords.length - 1) ignoreBoundary = 'both';
-        }
-        if (isPointOnLineSegment(lineCoords[i], lineCoords[i + 1], ptCoords, ignoreBoundary)) return true;
-    }
-    return false;
-}
-
-// See http://stackoverflow.com/a/4833823/1979085
-/**
- * @private
- * @param {Position} lineSegmentStart coord pair of start of line
- * @param {Position} lineSegmentEnd coord pair of end of line
- * @param {Position} pt coord pair of point to check
- * @param {boolean|string} excludeBoundary whether the point is allowed to fall on the line ends. If true which end to ignore.
- * @returns {boolean} true/false
- */
-function isPointOnLineSegment(lineSegmentStart, lineSegmentEnd, pt, excludeBoundary) {
-    var x = pt[0];
-    var y = pt[1];
-    var x1 = lineSegmentStart[0];
-    var y1 = lineSegmentStart[1];
-    var x2 = lineSegmentEnd[0];
-    var y2 = lineSegmentEnd[1];
-    var dxc = pt[0] - x1;
-    var dyc = pt[1] - y1;
-    var dxl = x2 - x1;
-    var dyl = y2 - y1;
-    var cross = dxc * dyl - dyc * dxl;
-    if (cross !== 0) {
-        return false;
-    }
-    if (!excludeBoundary) {
-        if (Math.abs(dxl) >= Math.abs(dyl)) {
-            return dxl > 0 ? x1 <= x && x <= x2 : x2 <= x && x <= x1;
-        }
-        return dyl > 0 ? y1 <= y && y <= y2 : y2 <= y && y <= y1;
-    } else if (excludeBoundary === 'start') {
-        if (Math.abs(dxl) >= Math.abs(dyl)) {
-            return dxl > 0 ? x1 < x && x <= x2 : x2 <= x && x < x1;
-        }
-        return dyl > 0 ? y1 < y && y <= y2 : y2 <= y && y < y1;
-    } else if (excludeBoundary === 'end') {
-        if (Math.abs(dxl) >= Math.abs(dyl)) {
-            return dxl > 0 ? x1 <= x && x < x2 : x2 < x && x <= x1;
-        }
-        return dyl > 0 ? y1 <= y && y < y2 : y2 < y && y <= y1;
-    } else if (excludeBoundary === 'both') {
-        if (Math.abs(dxl) >= Math.abs(dyl)) {
-            return dxl > 0 ? x1 < x && x < x2 : x2 < x && x < x1;
-        }
-        return dyl > 0 ? y1 < y && y < y2 : y2 < y && y < y1;
-    }
-}
-
-module.exports = booleanPointOnLine;
-module.exports.default = booleanPointOnLine;
-
-},{"@turf/helpers":15,"@turf/invariant":16}],10:[function(require,module,exports){
-'use strict';
-
-function _interopDefault (ex) { return (ex && (typeof ex === 'object') && 'default' in ex) ? ex['default'] : ex; }
-
-var calcBbox = _interopDefault(require('@turf/bbox'));
-var booleanPointOnLine = _interopDefault(require('@turf/boolean-point-on-line'));
-var booleanPointInPolygon = _interopDefault(require('@turf/boolean-point-in-polygon'));
-var invariant = require('@turf/invariant');
-
-/**
- * Boolean-within returns true if the first geometry is completely within the second geometry.
- * The interiors of both geometries must intersect and, the interior and boundary of the primary (geometry a)
- * must not intersect the exterior of the secondary (geometry b).
- * Boolean-within returns the exact opposite result of the `@turf/boolean-contains`.
- *
- * @name booleanWithin
- * @param {Geometry|Feature<any>} feature1 GeoJSON Feature or Geometry
- * @param {Geometry|Feature<any>} feature2 GeoJSON Feature or Geometry
- * @returns {boolean} true/false
- * @example
- * var line = turf.lineString([[1, 1], [1, 2], [1, 3], [1, 4]]);
- * var point = turf.point([1, 2]);
- *
- * turf.booleanWithin(point, line);
- * //=true
- */
-function booleanWithin(feature1, feature2) {
-    var type1 = invariant.getType(feature1);
-    var type2 = invariant.getType(feature2);
-    var geom1 = invariant.getGeom(feature1);
-    var geom2 = invariant.getGeom(feature2);
-
-    switch (type1) {
-    case 'Point':
-        switch (type2) {
-        case 'MultiPoint':
-            return isPointInMultiPoint(geom1, geom2);
-        case 'LineString':
-            return booleanPointOnLine(geom1, geom2, {ignoreEndVertices: true});
-        case 'Polygon':
-            return booleanPointInPolygon(geom1, geom2, {ignoreBoundary: true});
-        default:
-            throw new Error('feature2 ' + type2 + ' geometry not supported');
-        }
-    case 'MultiPoint':
-        switch (type2) {
-        case 'MultiPoint':
-            return isMultiPointInMultiPoint(geom1, geom2);
-        case 'LineString':
-            return isMultiPointOnLine(geom1, geom2);
-        case 'Polygon':
-            return isMultiPointInPoly(geom1, geom2);
-        default:
-            throw new Error('feature2 ' + type2 + ' geometry not supported');
-        }
-    case 'LineString':
-        switch (type2) {
-        case 'LineString':
-            return isLineOnLine(geom1, geom2);
-        case 'Polygon':
-            return isLineInPoly(geom1, geom2);
-        default:
-            throw new Error('feature2 ' + type2 + ' geometry not supported');
-        }
-    case 'Polygon':
-        switch (type2) {
-        case 'Polygon':
-            return isPolyInPoly(geom1, geom2);
-        default:
-            throw new Error('feature2 ' + type2 + ' geometry not supported');
-        }
-    default:
-        throw new Error('feature1 ' + type1 + ' geometry not supported');
-    }
-}
-
-function isPointInMultiPoint(point, multiPoint) {
-    var i;
-    var output = false;
-    for (i = 0; i < multiPoint.coordinates.length; i++) {
-        if (compareCoords(multiPoint.coordinates[i], point.coordinates)) {
-            output = true;
-            break;
-        }
-    }
-    return output;
-}
-
-function isMultiPointInMultiPoint(multiPoint1, multiPoint2) {
-    for (var i = 0; i < multiPoint1.coordinates.length; i++) {
-        var anyMatch = false;
-        for (var i2 = 0; i2 < multiPoint2.coordinates.length; i2++) {
-            if (compareCoords(multiPoint1.coordinates[i], multiPoint2.coordinates[i2])) {
-                anyMatch = true;
-            }
-        }
-        if (!anyMatch) {
-            return false;
-        }
-    }
-    return true;
-}
-
-function isMultiPointOnLine(multiPoint, lineString) {
-    var foundInsidePoint = false;
-
-    for (var i = 0; i < multiPoint.coordinates.length; i++) {
-        if (!booleanPointOnLine(multiPoint.coordinates[i], lineString)) {
-            return false;
-        }
-        if (!foundInsidePoint) {
-            foundInsidePoint = booleanPointOnLine(multiPoint.coordinates[i], lineString, {ignoreEndVertices: true});
-        }
-    }
-    return foundInsidePoint;
-}
-
-function isMultiPointInPoly(multiPoint, polygon) {
-    var output = true;
-    var oneInside = false;
-    for (var i = 0; i < multiPoint.coordinates.length; i++) {
-        var isInside = booleanPointInPolygon(multiPoint.coordinates[1], polygon);
-        if (!isInside) {
-            output = false;
-            break;
-        }
-        if (!oneInside) {
-            isInside = booleanPointInPolygon(multiPoint.coordinates[1], polygon, {ignoreBoundary: true});
-        }
-    }
-    return output && isInside;
-}
-
-function isLineOnLine(lineString1, lineString2) {
-    for (var i = 0; i < lineString1.coordinates.length; i++) {
-        if (!booleanPointOnLine(lineString1.coordinates[i], lineString2)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-function isLineInPoly(linestring, polygon) {
-    var polyBbox = calcBbox(polygon);
-    var lineBbox = calcBbox(linestring);
-    if (!doBBoxOverlap(polyBbox, lineBbox)) {
-        return false;
-    }
-    var foundInsidePoint = false;
-
-    for (var i = 0; i < linestring.coordinates.length - 1; i++) {
-        if (!booleanPointInPolygon(linestring.coordinates[i], polygon)) {
-            return false;
-        }
-        if (!foundInsidePoint) {
-            foundInsidePoint = booleanPointInPolygon(linestring.coordinates[i], polygon, {ignoreBoundary: true});
-        }
-        if (!foundInsidePoint) {
-            var midpoint = getMidpoint(linestring.coordinates[i], linestring.coordinates[i + 1]);
-            foundInsidePoint = booleanPointInPolygon(midpoint, polygon, {ignoreBoundary: true});
-
-        }
-    }
-    return foundInsidePoint;
-}
-
-/**
- * Is Polygon2 in Polygon1
- * Only takes into account outer rings
- *
- * @private
- * @param {Geometry|Feature<Polygon>} feature1 Polygon1
- * @param {Geometry|Feature<Polygon>} feature2 Polygon2
- * @returns {boolean} true/false
- */
-function isPolyInPoly(feature1, feature2) {
-    var poly1Bbox = calcBbox(feature1);
-    var poly2Bbox = calcBbox(feature2);
-    if (!doBBoxOverlap(poly2Bbox, poly1Bbox)) {
-        return false;
-    }
-    for (var i = 0; i < feature1.coordinates[0].length; i++) {
-        if (!booleanPointInPolygon(feature1.coordinates[0][i], feature2)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-function doBBoxOverlap(bbox1, bbox2) {
-    if (bbox1[0] > bbox2[0]) return false;
-    if (bbox1[2] < bbox2[2]) return false;
-    if (bbox1[1] > bbox2[1]) return false;
-    if (bbox1[3] < bbox2[3]) return false;
-    return true;
-}
-
-/**
- * compareCoords
- *
- * @private
- * @param {Position} pair1 point [x,y]
- * @param {Position} pair2 point [x,y]
- * @returns {boolean} true/false if coord pairs match
- */
-function compareCoords(pair1, pair2) {
-    return pair1[0] === pair2[0] && pair1[1] === pair2[1];
-}
-
-/**
- * getMidpoint
- *
- * @private
- * @param {Position} pair1 point [x,y]
- * @param {Position} pair2 point [x,y]
- * @returns {Position} midpoint of pair1 and pair2
- */
-function getMidpoint(pair1, pair2) {
-    return [(pair1[0] + pair2[0]) / 2, (pair1[1] + pair2[1]) / 2];
-}
-
-module.exports = booleanWithin;
-module.exports.default = booleanWithin;
-
-},{"@turf/bbox":7,"@turf/boolean-point-in-polygon":11,"@turf/boolean-point-on-line":9,"@turf/invariant":16}],11:[function(require,module,exports){
-'use strict';
-
-var invariant = require('@turf/invariant');
-
-// http://en.wikipedia.org/wiki/Even%E2%80%93odd_rule
-// modified from: https://github.com/substack/point-in-polygon/blob/master/index.js
-// which was modified from http://www.ecse.rpi.edu/Homepages/wrf/Research/Short_Notes/pnpoly.html
-
-/**
- * Takes a {@link Point} and a {@link Polygon} or {@link MultiPolygon} and determines if the point resides inside the polygon. The polygon can
- * be convex or concave. The function accounts for holes.
- *
- * @name booleanPointInPolygon
- * @param {Coord} point input point
- * @param {Feature<Polygon|MultiPolygon>} polygon input polygon or multipolygon
- * @param {Object} [options={}] Optional parameters
- * @param {boolean} [options.ignoreBoundary=false] True if polygon boundary should be ignored when determining if the point is inside the polygon otherwise false.
- * @returns {boolean} `true` if the Point is inside the Polygon; `false` if the Point is not inside the Polygon
- * @example
- * var pt = turf.point([-77, 44]);
- * var poly = turf.polygon([[
- *   [-81, 41],
- *   [-81, 47],
- *   [-72, 47],
- *   [-72, 41],
- *   [-81, 41]
- * ]]);
- *
- * turf.booleanPointInPolygon(pt, poly);
- * //= true
- */
-function booleanPointInPolygon(point, polygon, options) {
-    // Optional parameters
-    options = options || {};
-    if (typeof options !== 'object') throw new Error('options is invalid');
-    var ignoreBoundary = options.ignoreBoundary;
-
-    // validation
-    if (!point) throw new Error('point is required');
-    if (!polygon) throw new Error('polygon is required');
-
-    var pt = invariant.getCoord(point);
-    var polys = invariant.getCoords(polygon);
-    var type = (polygon.geometry) ? polygon.geometry.type : polygon.type;
-    var bbox = polygon.bbox;
-
-    // Quick elimination if point is not inside bbox
-    if (bbox && inBBox(pt, bbox) === false) return false;
-
-    // normalize to multipolygon
-    if (type === 'Polygon') polys = [polys];
-
-    for (var i = 0, insidePoly = false; i < polys.length && !insidePoly; i++) {
-        // check if it is in the outer ring first
-        if (inRing(pt, polys[i][0], ignoreBoundary)) {
-            var inHole = false;
-            var k = 1;
-            // check for the point in any of the holes
-            while (k < polys[i].length && !inHole) {
-                if (inRing(pt, polys[i][k], !ignoreBoundary)) {
-                    inHole = true;
-                }
-                k++;
-            }
-            if (!inHole) insidePoly = true;
-        }
-    }
-    return insidePoly;
-}
-
-/**
- * inRing
- *
- * @private
- * @param {Array<number>} pt [x,y]
- * @param {Array<Array<number>>} ring [[x,y], [x,y],..]
- * @param {boolean} ignoreBoundary ignoreBoundary
- * @returns {boolean} inRing
- */
-function inRing(pt, ring, ignoreBoundary) {
-    var isInside = false;
-    if (ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, ring.length - 1);
-
-    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-        var xi = ring[i][0], yi = ring[i][1];
-        var xj = ring[j][0], yj = ring[j][1];
-        var onBoundary = (pt[1] * (xi - xj) + yi * (xj - pt[0]) + yj * (pt[0] - xi) === 0) &&
-            ((xi - pt[0]) * (xj - pt[0]) <= 0) && ((yi - pt[1]) * (yj - pt[1]) <= 0);
-        if (onBoundary) return !ignoreBoundary;
-        var intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
-        (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi);
-        if (intersect) isInside = !isInside;
-    }
-    return isInside;
-}
-
-/**
- * inBBox
- *
- * @private
- * @param {Position} pt point [x,y]
- * @param {BBox} bbox BBox [west, south, east, north]
- * @returns {boolean} true/false if point is inside BBox
- */
-function inBBox(pt, bbox) {
-    return bbox[0] <= pt[0] &&
-           bbox[1] <= pt[1] &&
-           bbox[2] >= pt[0] &&
-           bbox[3] >= pt[1];
-}
-
-module.exports = booleanPointInPolygon;
-module.exports.default = booleanPointInPolygon;
-
-},{"@turf/invariant":16}],12:[function(require,module,exports){
-'use strict';
-
-/**
- * Returns a cloned copy of the passed GeoJSON Object, including possible 'Foreign Members'.
- * ~3-5x faster than the common JSON.parse + JSON.stringify combo method.
- *
- * @name clone
- * @param {GeoJSON} geojson GeoJSON Object
- * @returns {GeoJSON} cloned GeoJSON Object
- * @example
- * var line = turf.lineString([[-74, 40], [-78, 42], [-82, 35]], {color: 'red'});
- *
- * var lineCloned = turf.clone(line);
- */
-function clone(geojson) {
-    if (!geojson) throw new Error('geojson is required');
-
-    switch (geojson.type) {
-    case 'Feature':
-        return cloneFeature(geojson);
-    case 'FeatureCollection':
-        return cloneFeatureCollection(geojson);
-    case 'Point':
-    case 'LineString':
-    case 'Polygon':
-    case 'MultiPoint':
-    case 'MultiLineString':
-    case 'MultiPolygon':
-    case 'GeometryCollection':
-        return cloneGeometry(geojson);
-    default:
-        throw new Error('unknown GeoJSON type');
-    }
-}
-
-/**
- * Clone Feature
- *
- * @private
- * @param {Feature<any>} geojson GeoJSON Feature
- * @returns {Feature<any>} cloned Feature
- */
-function cloneFeature(geojson) {
-    var cloned = {type: 'Feature'};
-    // Preserve Foreign Members
-    Object.keys(geojson).forEach(function (key) {
-        switch (key) {
-        case 'type':
-        case 'properties':
-        case 'geometry':
-            return;
-        default:
-            cloned[key] = geojson[key];
-        }
-    });
-    // Add properties & geometry last
-    cloned.properties = cloneProperties(geojson.properties);
-    cloned.geometry = cloneGeometry(geojson.geometry);
-    return cloned;
-}
-
-/**
- * Clone Properties
- *
- * @private
- * @param {Object} properties GeoJSON Properties
- * @returns {Object} cloned Properties
- */
-function cloneProperties(properties) {
-    var cloned = {};
-    if (!properties) return cloned;
-    Object.keys(properties).forEach(function (key) {
-        var value = properties[key];
-        if (typeof value === 'object') {
-            if (value === null) {
-                // handle null
-                cloned[key] = null;
-            } else if (value.length) {
-                // handle Array
-                cloned[key] = value.map(function (item) {
-                    return item;
-                });
-            } else {
-                // handle generic Object
-                cloned[key] = cloneProperties(value);
-            }
-        } else cloned[key] = value;
-    });
-    return cloned;
-}
-
-/**
- * Clone Feature Collection
- *
- * @private
- * @param {FeatureCollection<any>} geojson GeoJSON Feature Collection
- * @returns {FeatureCollection<any>} cloned Feature Collection
- */
-function cloneFeatureCollection(geojson) {
-    var cloned = {type: 'FeatureCollection'};
-
-    // Preserve Foreign Members
-    Object.keys(geojson).forEach(function (key) {
-        switch (key) {
-        case 'type':
-        case 'features':
-            return;
-        default:
-            cloned[key] = geojson[key];
-        }
-    });
-    // Add features
-    cloned.features = geojson.features.map(function (feature) {
-        return cloneFeature(feature);
-    });
-    return cloned;
-}
-
-/**
- * Clone Geometry
- *
- * @private
- * @param {Geometry<any>} geometry GeoJSON Geometry
- * @returns {Geometry<any>} cloned Geometry
- */
-function cloneGeometry(geometry) {
-    var geom = {type: geometry.type};
-    if (geometry.bbox) geom.bbox = geometry.bbox;
-
-    if (geometry.type === 'GeometryCollection') {
-        geom.geometries = geometry.geometries.map(function (geom) {
-            return cloneGeometry(geom);
-        });
-        return geom;
-    }
-    geom.coordinates = deepSlice(geometry.coordinates);
-    return geom;
-}
-
-/**
- * Deep Slice coordinates
- *
- * @private
- * @param {Coordinates} coords Coordinates
- * @returns {Coordinates} all coordinates sliced
- */
-function deepSlice(coords) {
-    if (typeof coords[0] !== 'object') { return coords.slice(); }
-    return coords.map(function (coord) {
-        return deepSlice(coord);
-    });
-}
-
-module.exports = clone;
-module.exports.default = clone;
-
-},{}],13:[function(require,module,exports){
-'use strict';
-
-var invariant = require('@turf/invariant');
-var helpers = require('@turf/helpers');
-
-//http://en.wikipedia.org/wiki/Haversine_formula
-//http://www.movable-type.co.uk/scripts/latlong.html
-
-/**
- * Calculates the distance between two {@link Point|points} in degrees, radians,
- * miles, or kilometers. This uses the
- * [Haversine formula](http://en.wikipedia.org/wiki/Haversine_formula)
- * to account for global curvature.
- *
- * @name distance
- * @param {Coord} from origin point
- * @param {Coord} to destination point
- * @param {Object} [options={}] Optional parameters
- * @param {string} [options.units='kilometers'] can be degrees, radians, miles, or kilometers
- * @returns {number} distance between the two points
- * @example
- * var from = turf.point([-75.343, 39.984]);
- * var to = turf.point([-75.534, 39.123]);
- * var options = {units: 'miles'};
- *
- * var distance = turf.distance(from, to, options);
- *
- * //addToMap
- * var addToMap = [from, to];
- * from.properties.distance = distance;
- * to.properties.distance = distance;
- */
-function distance(from, to, options) {
-    // Optional parameters
-    options = options || {};
-    if (!helpers.isObject(options)) throw new Error('options is invalid');
-    var units = options.units;
-
-    var coordinates1 = invariant.getCoord(from);
-    var coordinates2 = invariant.getCoord(to);
-    var dLat = helpers.degreesToRadians((coordinates2[1] - coordinates1[1]));
-    var dLon = helpers.degreesToRadians((coordinates2[0] - coordinates1[0]));
-    var lat1 = helpers.degreesToRadians(coordinates1[1]);
-    var lat2 = helpers.degreesToRadians(coordinates2[1]);
-
-    var a = Math.pow(Math.sin(dLat / 2), 2) +
-          Math.pow(Math.sin(dLon / 2), 2) * Math.cos(lat1) * Math.cos(lat2);
-
-    return helpers.radiansToLength(2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)), units);
-}
-
-module.exports = distance;
-module.exports.default = distance;
-
-},{"@turf/helpers":15,"@turf/invariant":16}],14:[function(require,module,exports){
-'use strict';
-
-var meta = require('@turf/meta');
-var helpers = require('@turf/helpers');
-
-/**
- * Takes a feature or set of features and returns all positions as {@link Point|points}.
- *
- * @name explode
- * @param {GeoJSON} geojson input features
- * @returns {FeatureCollection<point>} points representing the exploded input features
- * @throws {Error} if it encounters an unknown geometry type
- * @example
- * var polygon = turf.polygon([[[-81, 41], [-88, 36], [-84, 31], [-80, 33], [-77, 39], [-81, 41]]]);
- *
- * var explode = turf.explode(polygon);
- *
- * //addToMap
- * var addToMap = [polygon, explode]
- */
-function explode(geojson) {
-    var points = [];
-    if (geojson.type === 'FeatureCollection') {
-        meta.featureEach(geojson, function (feature) {
-            meta.coordEach(feature, function (coord) {
-                points.push(helpers.point(coord, feature.properties));
-            });
-        });
-    } else {
-        meta.coordEach(geojson, function (coord) {
-            points.push(helpers.point(coord, geojson.properties));
-        });
-    }
-    return helpers.featureCollection(points);
-}
-
-module.exports = explode;
-module.exports.default = explode;
-
-},{"@turf/helpers":15,"@turf/meta":17}],15:[function(require,module,exports){
-'use strict';
-
-Object.defineProperty(exports, '__esModule', { value: true });
-
-/**
- * Earth Radius used with the Harvesine formula and approximates using a spherical (non-ellipsoid) Earth.
- */
-var earthRadius = 6371008.8;
-
-/**
- * Unit of measurement factors using a spherical (non-ellipsoid) earth radius.
- */
-var factors = {
-    meters: earthRadius,
-    metres: earthRadius,
-    millimeters: earthRadius * 1000,
-    millimetres: earthRadius * 1000,
-    centimeters: earthRadius * 100,
-    centimetres: earthRadius * 100,
-    kilometers: earthRadius / 1000,
-    kilometres: earthRadius / 1000,
-    miles: earthRadius / 1609.344,
-    nauticalmiles: earthRadius / 1852,
-    inches: earthRadius * 39.370,
-    yards: earthRadius / 1.0936,
-    feet: earthRadius * 3.28084,
-    radians: 1,
-    degrees: earthRadius / 111325,
-};
-
-/**
- * Units of measurement factors based on 1 meter.
- */
-var unitsFactors = {
-    meters: 1,
-    metres: 1,
-    millimeters: 1000,
-    millimetres: 1000,
-    centimeters: 100,
-    centimetres: 100,
-    kilometers: 1 / 1000,
-    kilometres: 1 / 1000,
-    miles: 1 / 1609.344,
-    nauticalmiles: 1 / 1852,
-    inches: 39.370,
-    yards: 1 / 1.0936,
-    feet: 3.28084,
-    radians: 1 / earthRadius,
-    degrees: 1 / 111325,
-};
-
-/**
- * Area of measurement factors based on 1 square meter.
- */
-var areaFactors = {
-    meters: 1,
-    metres: 1,
-    millimeters: 1000000,
-    millimetres: 1000000,
-    centimeters: 10000,
-    centimetres: 10000,
-    kilometers: 0.000001,
-    kilometres: 0.000001,
-    acres: 0.000247105,
-    miles: 3.86e-7,
-    yards: 1.195990046,
-    feet: 10.763910417,
-    inches: 1550.003100006
-};
-
-/**
- * Wraps a GeoJSON {@link Geometry} in a GeoJSON {@link Feature}.
- *
- * @name feature
- * @param {Geometry} geometry input geometry
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature} a GeoJSON Feature
- * @example
- * var geometry = {
- *   "type": "Point",
- *   "coordinates": [110, 50]
- * };
- *
- * var feature = turf.feature(geometry);
- *
- * //=feature
- */
-function feature(geometry, properties, options) {
-    // Optional Parameters
-    options = options || {};
-    if (!isObject(options)) throw new Error('options is invalid');
-    var bbox = options.bbox;
-    var id = options.id;
-
-    // Validation
-    if (geometry === undefined) throw new Error('geometry is required');
-    if (properties && properties.constructor !== Object) throw new Error('properties must be an Object');
-    if (bbox) validateBBox(bbox);
-    if (id) validateId(id);
-
-    // Main
-    var feat = {type: 'Feature'};
-    if (id) feat.id = id;
-    if (bbox) feat.bbox = bbox;
-    feat.properties = properties || {};
-    feat.geometry = geometry;
-    return feat;
-}
-
-/**
- * Creates a GeoJSON {@link Geometry} from a Geometry string type & coordinates.
- * For GeometryCollection type use `helpers.geometryCollection`
- *
- * @name geometry
- * @param {string} type Geometry Type
- * @param {Array<number>} coordinates Coordinates
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Geometry
- * @returns {Geometry} a GeoJSON Geometry
- * @example
- * var type = 'Point';
- * var coordinates = [110, 50];
- *
- * var geometry = turf.geometry(type, coordinates);
- *
- * //=geometry
- */
-function geometry(type, coordinates, options) {
-    // Optional Parameters
-    options = options || {};
-    if (!isObject(options)) throw new Error('options is invalid');
-    var bbox = options.bbox;
-
-    // Validation
-    if (!type) throw new Error('type is required');
-    if (!coordinates) throw new Error('coordinates is required');
-    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
-    if (bbox) validateBBox(bbox);
-
-    // Main
-    var geom;
-    switch (type) {
-    case 'Point': geom = point(coordinates).geometry; break;
-    case 'LineString': geom = lineString(coordinates).geometry; break;
-    case 'Polygon': geom = polygon(coordinates).geometry; break;
-    case 'MultiPoint': geom = multiPoint(coordinates).geometry; break;
-    case 'MultiLineString': geom = multiLineString(coordinates).geometry; break;
-    case 'MultiPolygon': geom = multiPolygon(coordinates).geometry; break;
-    default: throw new Error(type + ' is invalid');
-    }
-    if (bbox) geom.bbox = bbox;
-    return geom;
-}
-
-/**
- * Creates a {@link Point} {@link Feature} from a Position.
- *
- * @name point
- * @param {Array<number>} coordinates longitude, latitude position (each in decimal degrees)
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<Point>} a Point feature
- * @example
- * var point = turf.point([-75.343, 39.984]);
- *
- * //=point
- */
-function point(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
-    if (coordinates.length < 2) throw new Error('coordinates must be at least 2 numbers long');
-    if (!isNumber(coordinates[0]) || !isNumber(coordinates[1])) throw new Error('coordinates must contain numbers');
-
-    return feature({
-        type: 'Point',
-        coordinates: coordinates
-    }, properties, options);
-}
-
-/**
- * Creates a {@link Point} {@link FeatureCollection} from an Array of Point coordinates.
- *
- * @name points
- * @param {Array<Array<number>>} coordinates an array of Points
- * @param {Object} [properties={}] Translate these properties to each Feature
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the FeatureCollection
- * @param {string|number} [options.id] Identifier associated with the FeatureCollection
- * @returns {FeatureCollection<Point>} Point Feature
- * @example
- * var points = turf.points([
- *   [-75, 39],
- *   [-80, 45],
- *   [-78, 50]
- * ]);
- *
- * //=points
- */
-function points(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
-
-    return featureCollection(coordinates.map(function (coords) {
-        return point(coords, properties);
-    }), options);
-}
-
-/**
- * Creates a {@link Polygon} {@link Feature} from an Array of LinearRings.
- *
- * @name polygon
- * @param {Array<Array<Array<number>>>} coordinates an array of LinearRings
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<Polygon>} Polygon Feature
- * @example
- * var polygon = turf.polygon([[[-5, 52], [-4, 56], [-2, 51], [-7, 54], [-5, 52]]], { name: 'poly1' });
- *
- * //=polygon
- */
-function polygon(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-
-    for (var i = 0; i < coordinates.length; i++) {
-        var ring = coordinates[i];
-        if (ring.length < 4) {
-            throw new Error('Each LinearRing of a Polygon must have 4 or more Positions.');
-        }
-        for (var j = 0; j < ring[ring.length - 1].length; j++) {
-            // Check if first point of Polygon contains two numbers
-            if (i === 0 && j === 0 && !isNumber(ring[0][0]) || !isNumber(ring[0][1])) throw new Error('coordinates must contain numbers');
-            if (ring[ring.length - 1][j] !== ring[0][j]) {
-                throw new Error('First and last Position are not equivalent.');
-            }
-        }
-    }
-
-    return feature({
-        type: 'Polygon',
-        coordinates: coordinates
-    }, properties, options);
-}
-
-/**
- * Creates a {@link Polygon} {@link FeatureCollection} from an Array of Polygon coordinates.
- *
- * @name polygons
- * @param {Array<Array<Array<Array<number>>>>} coordinates an array of Polygon coordinates
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the FeatureCollection
- * @returns {FeatureCollection<Polygon>} Polygon FeatureCollection
- * @example
- * var polygons = turf.polygons([
- *   [[[-5, 52], [-4, 56], [-2, 51], [-7, 54], [-5, 52]]],
- *   [[[-15, 42], [-14, 46], [-12, 41], [-17, 44], [-15, 42]]],
- * ]);
- *
- * //=polygons
- */
-function polygons(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
-
-    return featureCollection(coordinates.map(function (coords) {
-        return polygon(coords, properties);
-    }), options);
-}
-
-/**
- * Creates a {@link LineString} {@link Feature} from an Array of Positions.
- *
- * @name lineString
- * @param {Array<Array<number>>} coordinates an array of Positions
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<LineString>} LineString Feature
- * @example
- * var linestring1 = turf.lineString([[-24, 63], [-23, 60], [-25, 65], [-20, 69]], {name: 'line 1'});
- * var linestring2 = turf.lineString([[-14, 43], [-13, 40], [-15, 45], [-10, 49]], {name: 'line 2'});
- *
- * //=linestring1
- * //=linestring2
- */
-function lineString(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-    if (coordinates.length < 2) throw new Error('coordinates must be an array of two or more positions');
-    // Check if first point of LineString contains two numbers
-    if (!isNumber(coordinates[0][1]) || !isNumber(coordinates[0][1])) throw new Error('coordinates must contain numbers');
-
-    return feature({
-        type: 'LineString',
-        coordinates: coordinates
-    }, properties, options);
-}
-
-/**
- * Creates a {@link LineString} {@link FeatureCollection} from an Array of LineString coordinates.
- *
- * @name lineStrings
- * @param {Array<Array<number>>} coordinates an array of LinearRings
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the FeatureCollection
- * @param {string|number} [options.id] Identifier associated with the FeatureCollection
- * @returns {FeatureCollection<LineString>} LineString FeatureCollection
- * @example
- * var linestrings = turf.lineStrings([
- *   [[-24, 63], [-23, 60], [-25, 65], [-20, 69]],
- *   [[-14, 43], [-13, 40], [-15, 45], [-10, 49]]
- * ]);
- *
- * //=linestrings
- */
-function lineStrings(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
-
-    return featureCollection(coordinates.map(function (coords) {
-        return lineString(coords, properties);
-    }), options);
-}
-
-/**
- * Takes one or more {@link Feature|Features} and creates a {@link FeatureCollection}.
- *
- * @name featureCollection
- * @param {Feature[]} features input features
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {FeatureCollection} FeatureCollection of Features
- * @example
- * var locationA = turf.point([-75.343, 39.984], {name: 'Location A'});
- * var locationB = turf.point([-75.833, 39.284], {name: 'Location B'});
- * var locationC = turf.point([-75.534, 39.123], {name: 'Location C'});
- *
- * var collection = turf.featureCollection([
- *   locationA,
- *   locationB,
- *   locationC
- * ]);
- *
- * //=collection
- */
-function featureCollection(features, options) {
-    // Optional Parameters
-    options = options || {};
-    if (!isObject(options)) throw new Error('options is invalid');
-    var bbox = options.bbox;
-    var id = options.id;
-
-    // Validation
-    if (!features) throw new Error('No features passed');
-    if (!Array.isArray(features)) throw new Error('features must be an Array');
-    if (bbox) validateBBox(bbox);
-    if (id) validateId(id);
-
-    // Main
-    var fc = {type: 'FeatureCollection'};
-    if (id) fc.id = id;
-    if (bbox) fc.bbox = bbox;
-    fc.features = features;
-    return fc;
-}
-
-/**
- * Creates a {@link Feature<MultiLineString>} based on a
- * coordinate array. Properties can be added optionally.
- *
- * @name multiLineString
- * @param {Array<Array<Array<number>>>} coordinates an array of LineStrings
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<MultiLineString>} a MultiLineString feature
- * @throws {Error} if no coordinates are passed
- * @example
- * var multiLine = turf.multiLineString([[[0,0],[10,10]]]);
- *
- * //=multiLine
- */
-function multiLineString(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-
-    return feature({
-        type: 'MultiLineString',
-        coordinates: coordinates
-    }, properties, options);
-}
-
-/**
- * Creates a {@link Feature<MultiPoint>} based on a
- * coordinate array. Properties can be added optionally.
- *
- * @name multiPoint
- * @param {Array<Array<number>>} coordinates an array of Positions
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<MultiPoint>} a MultiPoint feature
- * @throws {Error} if no coordinates are passed
- * @example
- * var multiPt = turf.multiPoint([[0,0],[10,10]]);
- *
- * //=multiPt
- */
-function multiPoint(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-
-    return feature({
-        type: 'MultiPoint',
-        coordinates: coordinates
-    }, properties, options);
-}
-
-/**
- * Creates a {@link Feature<MultiPolygon>} based on a
- * coordinate array. Properties can be added optionally.
- *
- * @name multiPolygon
- * @param {Array<Array<Array<Array<number>>>>} coordinates an array of Polygons
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<MultiPolygon>} a multipolygon feature
- * @throws {Error} if no coordinates are passed
- * @example
- * var multiPoly = turf.multiPolygon([[[[0,0],[0,10],[10,10],[10,0],[0,0]]]]);
- *
- * //=multiPoly
- *
- */
-function multiPolygon(coordinates, properties, options) {
-    if (!coordinates) throw new Error('coordinates is required');
-
-    return feature({
-        type: 'MultiPolygon',
-        coordinates: coordinates
-    }, properties, options);
-}
-
-/**
- * Creates a {@link Feature<GeometryCollection>} based on a
- * coordinate array. Properties can be added optionally.
- *
- * @name geometryCollection
- * @param {Array<Geometry>} geometries an array of GeoJSON Geometries
- * @param {Object} [properties={}] an Object of key-value pairs to add as properties
- * @param {Object} [options={}] Optional Parameters
- * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
- * @param {string|number} [options.id] Identifier associated with the Feature
- * @returns {Feature<GeometryCollection>} a GeoJSON GeometryCollection Feature
- * @example
- * var pt = {
- *     "type": "Point",
- *       "coordinates": [100, 0]
- *     };
- * var line = {
- *     "type": "LineString",
- *     "coordinates": [ [101, 0], [102, 1] ]
- *   };
- * var collection = turf.geometryCollection([pt, line]);
- *
- * //=collection
- */
-function geometryCollection(geometries, properties, options) {
-    if (!geometries) throw new Error('geometries is required');
-    if (!Array.isArray(geometries)) throw new Error('geometries must be an Array');
-
-    return feature({
-        type: 'GeometryCollection',
-        geometries: geometries
-    }, properties, options);
-}
-
-/**
- * Round number to precision
- *
- * @param {number} num Number
- * @param {number} [precision=0] Precision
- * @returns {number} rounded number
- * @example
- * turf.round(120.4321)
- * //=120
- *
- * turf.round(120.4321, 2)
- * //=120.43
- */
-function round(num, precision) {
-    if (num === undefined || num === null || isNaN(num)) throw new Error('num is required');
-    if (precision && !(precision >= 0)) throw new Error('precision must be a positive number');
-    var multiplier = Math.pow(10, precision || 0);
-    return Math.round(num * multiplier) / multiplier;
-}
-
-/**
- * Convert a distance measurement (assuming a spherical Earth) from radians to a more friendly unit.
- * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
- *
- * @name radiansToLength
- * @param {number} radians in radians across the sphere
- * @param {string} [units='kilometers'] can be degrees, radians, miles, or kilometers inches, yards, metres, meters, kilometres, kilometers.
- * @returns {number} distance
- */
-function radiansToLength(radians, units) {
-    if (radians === undefined || radians === null) throw new Error('radians is required');
-
-    if (units && typeof units !== 'string') throw new Error('units must be a string');
-    var factor = factors[units || 'kilometers'];
-    if (!factor) throw new Error(units + ' units is invalid');
-    return radians * factor;
-}
-
-/**
- * Convert a distance measurement (assuming a spherical Earth) from a real-world unit into radians
- * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
- *
- * @name lengthToRadians
- * @param {number} distance in real units
- * @param {string} [units='kilometers'] can be degrees, radians, miles, or kilometers inches, yards, metres, meters, kilometres, kilometers.
- * @returns {number} radians
- */
-function lengthToRadians(distance, units) {
-    if (distance === undefined || distance === null) throw new Error('distance is required');
-
-    if (units && typeof units !== 'string') throw new Error('units must be a string');
-    var factor = factors[units || 'kilometers'];
-    if (!factor) throw new Error(units + ' units is invalid');
-    return distance / factor;
-}
-
-/**
- * Convert a distance measurement (assuming a spherical Earth) from a real-world unit into degrees
- * Valid units: miles, nauticalmiles, inches, yards, meters, metres, centimeters, kilometres, feet
- *
- * @name lengthToDegrees
- * @param {number} distance in real units
- * @param {string} [units='kilometers'] can be degrees, radians, miles, or kilometers inches, yards, metres, meters, kilometres, kilometers.
- * @returns {number} degrees
- */
-function lengthToDegrees(distance, units) {
-    return radiansToDegrees(lengthToRadians(distance, units));
-}
-
-/**
- * Converts any bearing angle from the north line direction (positive clockwise)
- * and returns an angle between 0-360 degrees (positive clockwise), 0 being the north line
- *
- * @name bearingToAzimuth
- * @param {number} bearing angle, between -180 and +180 degrees
- * @returns {number} angle between 0 and 360 degrees
- */
-function bearingToAzimuth(bearing) {
-    if (bearing === null || bearing === undefined) throw new Error('bearing is required');
-
-    var angle = bearing % 360;
-    if (angle < 0) angle += 360;
-    return angle;
-}
-
-/**
- * Converts an angle in radians to degrees
- *
- * @name radiansToDegrees
- * @param {number} radians angle in radians
- * @returns {number} degrees between 0 and 360 degrees
- */
-function radiansToDegrees(radians) {
-    if (radians === null || radians === undefined) throw new Error('radians is required');
-
-    var degrees = radians % (2 * Math.PI);
-    return degrees * 180 / Math.PI;
-}
-
-/**
- * Converts an angle in degrees to radians
- *
- * @name degreesToRadians
- * @param {number} degrees angle between 0 and 360 degrees
- * @returns {number} angle in radians
- */
-function degreesToRadians(degrees) {
-    if (degrees === null || degrees === undefined) throw new Error('degrees is required');
-
-    var radians = degrees % 360;
-    return radians * Math.PI / 180;
-}
-
-/**
- * Converts a length to the requested unit.
- * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
- *
- * @param {number} length to be converted
- * @param {string} originalUnit of the length
- * @param {string} [finalUnit='kilometers'] returned unit
- * @returns {number} the converted length
- */
-function convertLength(length, originalUnit, finalUnit) {
-    if (length === null || length === undefined) throw new Error('length is required');
-    if (!(length >= 0)) throw new Error('length must be a positive number');
-
-    return radiansToLength(lengthToRadians(length, originalUnit), finalUnit || 'kilometers');
-}
-
-/**
- * Converts a area to the requested unit.
- * Valid units: kilometers, kilometres, meters, metres, centimetres, millimeters, acres, miles, yards, feet, inches
- * @param {number} area to be converted
- * @param {string} [originalUnit='meters'] of the distance
- * @param {string} [finalUnit='kilometers'] returned unit
- * @returns {number} the converted distance
- */
-function convertArea(area, originalUnit, finalUnit) {
-    if (area === null || area === undefined) throw new Error('area is required');
-    if (!(area >= 0)) throw new Error('area must be a positive number');
-
-    var startFactor = areaFactors[originalUnit || 'meters'];
-    if (!startFactor) throw new Error('invalid original units');
-
-    var finalFactor = areaFactors[finalUnit || 'kilometers'];
-    if (!finalFactor) throw new Error('invalid final units');
-
-    return (area / startFactor) * finalFactor;
-}
-
-/**
- * isNumber
- *
- * @param {*} num Number to validate
- * @returns {boolean} true/false
- * @example
- * turf.isNumber(123)
- * //=true
- * turf.isNumber('foo')
- * //=false
- */
-function isNumber(num) {
-    return !isNaN(num) && num !== null && !Array.isArray(num);
-}
-
-/**
- * isObject
- *
- * @param {*} input variable to validate
- * @returns {boolean} true/false
- * @example
- * turf.isObject({elevation: 10})
- * //=true
- * turf.isObject('foo')
- * //=false
- */
-function isObject(input) {
-    return (!!input) && (input.constructor === Object);
-}
-
-/**
- * Validate BBox
- *
- * @private
- * @param {Array<number>} bbox BBox to validate
- * @returns {void}
- * @throws Error if BBox is not valid
- * @example
- * validateBBox([-180, -40, 110, 50])
- * //=OK
- * validateBBox([-180, -40])
- * //=Error
- * validateBBox('Foo')
- * //=Error
- * validateBBox(5)
- * //=Error
- * validateBBox(null)
- * //=Error
- * validateBBox(undefined)
- * //=Error
- */
-function validateBBox(bbox) {
-    if (!bbox) throw new Error('bbox is required');
-    if (!Array.isArray(bbox)) throw new Error('bbox must be an Array');
-    if (bbox.length !== 4 && bbox.length !== 6) throw new Error('bbox must be an Array of 4 or 6 numbers');
-    bbox.forEach(function (num) {
-        if (!isNumber(num)) throw new Error('bbox must only contain numbers');
-    });
-}
-
-/**
- * Validate Id
- *
- * @private
- * @param {string|number} id Id to validate
- * @returns {void}
- * @throws Error if Id is not valid
- * @example
- * validateId([-180, -40, 110, 50])
- * //=Error
- * validateId([-180, -40])
- * //=Error
- * validateId('Foo')
- * //=OK
- * validateId(5)
- * //=OK
- * validateId(null)
- * //=Error
- * validateId(undefined)
- * //=Error
- */
-function validateId(id) {
-    if (!id) throw new Error('id is required');
-    if (['string', 'number'].indexOf(typeof id) === -1) throw new Error('id must be a number or a string');
-}
-
-// Deprecated methods
-function radians2degrees() {
-    throw new Error('method has been renamed to `radiansToDegrees`');
-}
-
-function degrees2radians() {
-    throw new Error('method has been renamed to `degreesToRadians`');
-}
-
-function distanceToDegrees() {
-    throw new Error('method has been renamed to `lengthToDegrees`');
-}
-
-function distanceToRadians() {
-    throw new Error('method has been renamed to `lengthToRadians`');
-}
-
-function radiansToDistance() {
-    throw new Error('method has been renamed to `radiansToLength`');
-}
-
-function bearingToAngle() {
-    throw new Error('method has been renamed to `bearingToAzimuth`');
-}
-
-function convertDistance() {
-    throw new Error('method has been renamed to `convertLength`');
-}
-
-exports.earthRadius = earthRadius;
-exports.factors = factors;
-exports.unitsFactors = unitsFactors;
-exports.areaFactors = areaFactors;
-exports.feature = feature;
-exports.geometry = geometry;
-exports.point = point;
-exports.points = points;
-exports.polygon = polygon;
-exports.polygons = polygons;
-exports.lineString = lineString;
-exports.lineStrings = lineStrings;
-exports.featureCollection = featureCollection;
-exports.multiLineString = multiLineString;
-exports.multiPoint = multiPoint;
-exports.multiPolygon = multiPolygon;
-exports.geometryCollection = geometryCollection;
-exports.round = round;
-exports.radiansToLength = radiansToLength;
-exports.lengthToRadians = lengthToRadians;
-exports.lengthToDegrees = lengthToDegrees;
-exports.bearingToAzimuth = bearingToAzimuth;
-exports.radiansToDegrees = radiansToDegrees;
-exports.degreesToRadians = degreesToRadians;
-exports.convertLength = convertLength;
-exports.convertArea = convertArea;
-exports.isNumber = isNumber;
-exports.isObject = isObject;
-exports.validateBBox = validateBBox;
-exports.validateId = validateId;
-exports.radians2degrees = radians2degrees;
-exports.degrees2radians = degrees2radians;
-exports.distanceToDegrees = distanceToDegrees;
-exports.distanceToRadians = distanceToRadians;
-exports.radiansToDistance = radiansToDistance;
-exports.bearingToAngle = bearingToAngle;
-exports.convertDistance = convertDistance;
-
-},{}],16:[function(require,module,exports){
-'use strict';
-
-Object.defineProperty(exports, '__esModule', { value: true });
-
-var helpers = require('@turf/helpers');
-
-/**
- * Unwrap a coordinate from a Point Feature, Geometry or a single coordinate.
- *
- * @name getCoord
- * @param {Array<number>|Geometry<Point>|Feature<Point>} coord GeoJSON Point or an Array of numbers
- * @returns {Array<number>} coordinates
- * @example
- * var pt = turf.point([10, 10]);
- *
- * var coord = turf.getCoord(pt);
- * //= [10, 10]
- */
-function getCoord(coord) {
-    if (!coord) throw new Error('coord is required');
-    if (coord.type === 'Feature' && coord.geometry !== null && coord.geometry.type === 'Point') return coord.geometry.coordinates;
-    if (coord.type === 'Point') return coord.coordinates;
-    if (Array.isArray(coord) && coord.length >= 2 && coord[0].length === undefined && coord[1].length === undefined) return coord;
-
-    throw new Error('coord must be GeoJSON Point or an Array of numbers');
-}
-
-/**
- * Unwrap coordinates from a Feature, Geometry Object or an Array
- *
- * @name getCoords
- * @param {Array<any>|Geometry|Feature} coords Feature, Geometry Object or an Array
- * @returns {Array<any>} coordinates
- * @example
- * var poly = turf.polygon([[[119.32, -8.7], [119.55, -8.69], [119.51, -8.54], [119.32, -8.7]]]);
- *
- * var coords = turf.getCoords(poly);
- * //= [[[119.32, -8.7], [119.55, -8.69], [119.51, -8.54], [119.32, -8.7]]]
- */
-function getCoords(coords) {
-    if (!coords) throw new Error('coords is required');
-
-    // Feature
-    if (coords.type === 'Feature' && coords.geometry !== null) return coords.geometry.coordinates;
-
-    // Geometry
-    if (coords.coordinates) return coords.coordinates;
-
-    // Array of numbers
-    if (Array.isArray(coords)) return coords;
-
-    throw new Error('coords must be GeoJSON Feature, Geometry Object or an Array');
-}
-
-/**
- * Checks if coordinates contains a number
- *
- * @name containsNumber
- * @param {Array<any>} coordinates GeoJSON Coordinates
- * @returns {boolean} true if Array contains a number
- */
-function containsNumber(coordinates) {
-    if (coordinates.length > 1 && helpers.isNumber(coordinates[0]) && helpers.isNumber(coordinates[1])) {
-        return true;
-    }
-
-    if (Array.isArray(coordinates[0]) && coordinates[0].length) {
-        return containsNumber(coordinates[0]);
-    }
-    throw new Error('coordinates must only contain numbers');
-}
-
-/**
- * Enforce expectations about types of GeoJSON objects for Turf.
- *
- * @name geojsonType
- * @param {GeoJSON} value any GeoJSON object
- * @param {string} type expected GeoJSON type
- * @param {string} name name of calling function
- * @throws {Error} if value is not the expected type.
- */
-function geojsonType(value, type, name) {
-    if (!type || !name) throw new Error('type and name required');
-
-    if (!value || value.type !== type) {
-        throw new Error('Invalid input to ' + name + ': must be a ' + type + ', given ' + value.type);
-    }
-}
-
-/**
- * Enforce expectations about types of {@link Feature} inputs for Turf.
- * Internally this uses {@link geojsonType} to judge geometry types.
- *
- * @name featureOf
- * @param {Feature} feature a feature with an expected geometry type
- * @param {string} type expected GeoJSON type
- * @param {string} name name of calling function
- * @throws {Error} error if value is not the expected type.
- */
-function featureOf(feature, type, name) {
-    if (!feature) throw new Error('No feature passed');
-    if (!name) throw new Error('.featureOf() requires a name');
-    if (!feature || feature.type !== 'Feature' || !feature.geometry) {
-        throw new Error('Invalid input to ' + name + ', Feature with geometry required');
-    }
-    if (!feature.geometry || feature.geometry.type !== type) {
-        throw new Error('Invalid input to ' + name + ': must be a ' + type + ', given ' + feature.geometry.type);
-    }
-}
-
-/**
- * Enforce expectations about types of {@link FeatureCollection} inputs for Turf.
- * Internally this uses {@link geojsonType} to judge geometry types.
- *
- * @name collectionOf
- * @param {FeatureCollection} featureCollection a FeatureCollection for which features will be judged
- * @param {string} type expected GeoJSON type
- * @param {string} name name of calling function
- * @throws {Error} if value is not the expected type.
- */
-function collectionOf(featureCollection, type, name) {
-    if (!featureCollection) throw new Error('No featureCollection passed');
-    if (!name) throw new Error('.collectionOf() requires a name');
-    if (!featureCollection || featureCollection.type !== 'FeatureCollection') {
-        throw new Error('Invalid input to ' + name + ', FeatureCollection required');
-    }
-    for (var i = 0; i < featureCollection.features.length; i++) {
-        var feature = featureCollection.features[i];
-        if (!feature || feature.type !== 'Feature' || !feature.geometry) {
-            throw new Error('Invalid input to ' + name + ', Feature with geometry required');
-        }
-        if (!feature.geometry || feature.geometry.type !== type) {
-            throw new Error('Invalid input to ' + name + ': must be a ' + type + ', given ' + feature.geometry.type);
-        }
-    }
-}
-
-/**
- * Get Geometry from Feature or Geometry Object
- *
- * @param {Feature|Geometry} geojson GeoJSON Feature or Geometry Object
- * @returns {Geometry|null} GeoJSON Geometry Object
- * @throws {Error} if geojson is not a Feature or Geometry Object
- * @example
- * var point = {
- *   "type": "Feature",
- *   "properties": {},
- *   "geometry": {
- *     "type": "Point",
- *     "coordinates": [110, 40]
- *   }
- * }
- * var geom = turf.getGeom(point)
- * //={"type": "Point", "coordinates": [110, 40]}
- */
-function getGeom(geojson) {
-    if (!geojson) throw new Error('geojson is required');
-    if (geojson.geometry !== undefined) return geojson.geometry;
-    if (geojson.coordinates || geojson.geometries) return geojson;
-    throw new Error('geojson must be a valid Feature or Geometry Object');
-}
-
-/**
- * Get Geometry Type from Feature or Geometry Object
- *
- * @throws {Error} **DEPRECATED** in v5.0.0 in favor of getType
- */
-function getGeomType() {
-    throw new Error('invariant.getGeomType has been deprecated in v5.0 in favor of invariant.getType');
-}
-
-/**
- * Get GeoJSON object's type, Geometry type is prioritize.
- *
- * @param {GeoJSON} geojson GeoJSON object
- * @param {string} [name="geojson"] name of the variable to display in error message
- * @returns {string} GeoJSON type
- * @example
- * var point = {
- *   "type": "Feature",
- *   "properties": {},
- *   "geometry": {
- *     "type": "Point",
- *     "coordinates": [110, 40]
- *   }
- * }
- * var geom = turf.getType(point)
- * //="Point"
- */
-function getType(geojson, name) {
-    if (!geojson) throw new Error((name || 'geojson') + ' is required');
-    // GeoJSON Feature & GeometryCollection
-    if (geojson.geometry && geojson.geometry.type) return geojson.geometry.type;
-    // GeoJSON Geometry & FeatureCollection
-    if (geojson.type) return geojson.type;
-    throw new Error((name || 'geojson') + ' is invalid');
-}
-
-exports.getCoord = getCoord;
-exports.getCoords = getCoords;
-exports.containsNumber = containsNumber;
-exports.geojsonType = geojsonType;
-exports.featureOf = featureOf;
-exports.collectionOf = collectionOf;
-exports.getGeom = getGeom;
-exports.getGeomType = getGeomType;
-exports.getType = getType;
-
-},{"@turf/helpers":15}],17:[function(require,module,exports){
+},{"@turf/meta":8}],8:[function(require,module,exports){
 'use strict';
 
 Object.defineProperty(exports, '__esModule', { value: true });
@@ -3639,63 +1899,2564 @@ exports.lineReduce = lineReduce;
 exports.findSegment = findSegment;
 exports.findPoint = findPoint;
 
-},{"@turf/helpers":15}],18:[function(require,module,exports){
+},{"@turf/helpers":16}],9:[function(require,module,exports){
+'use strict';
+
+var invariant = require('@turf/invariant');
+
+/**
+ * Takes a ring and return true or false whether or not the ring is clockwise or counter-clockwise.
+ *
+ * @name booleanClockwise
+ * @param {Feature<LineString>} line to be evaluated
+ * @returns {boolean} true/false
+ * @example
+ * var clockwiseRing = turf.lineString([[0,0],[1,1],[1,0],[0,0]]);
+ * var counterClockwiseRing = turf.lineString([[0,0],[1,0],[1,1],[0,0]]);
+ *
+ * turf.booleanClockwise(clockwiseRing)
+ * //=true
+ * turf.booleanClockwise(counterClockwiseRing)
+ * //=false
+ */
+function booleanClockwise(line) {
+    // validation
+    if (!line) throw new Error('line is required');
+    var type = (line.geometry) ? line.geometry.type : line.type;
+    if (!Array.isArray(line) && type !== 'LineString') throw new Error('geometry must be a LineString');
+
+    var ring = invariant.getCoords(line);
+    var sum = 0;
+    var i = 1;
+    var prev, cur;
+    while (i < ring.length) {
+        prev = cur || ring[0];
+        cur = ring[i];
+        sum += ((cur[0] - prev[0]) * (cur[1] + prev[1]));
+        i++;
+    }
+    return sum > 0;
+}
+
+module.exports = booleanClockwise;
+module.exports.default = booleanClockwise;
+
+},{"@turf/invariant":17}],10:[function(require,module,exports){
+'use strict';
+
+var invariant = require('@turf/invariant');
+var helpers = require('@turf/helpers');
+
+/**
+ * Returns true if a point is on a line. Accepts a optional parameter to ignore the start and end vertices of the linestring.
+ *
+ * @name booleanPointOnLine
+ * @param {Coord} pt GeoJSON Point
+ * @param {Feature<LineString>} line GeoJSON LineString
+ * @param {Object} [options={}] Optional parameters
+ * @param {boolean} [options.ignoreEndVertices=false] whether to ignore the start and end vertices.
+ * @returns {boolean} true/false
+ * @example
+ * var pt = turf.point([0, 0]);
+ * var line = turf.lineString([[-1, -1],[1, 1],[1.5, 2.2]]);
+ * var isPointOnLine = turf.booleanPointOnLine(pt, line);
+ * //=true
+ */
+function booleanPointOnLine(pt, line, options) {
+    // Optional parameters
+    options = options || {};
+    var ignoreEndVertices = options.ignoreEndVertices;
+    if (!helpers.isObject(options)) throw new Error('invalid options');
+
+    // Validate input
+    if (!pt) throw new Error('pt is required');
+    if (!line) throw new Error('line is required');
+
+    // Normalize inputs
+    var ptCoords = invariant.getCoord(pt);
+    var lineCoords = invariant.getCoords(line);
+
+    // Main
+    for (var i = 0; i < lineCoords.length - 1; i++) {
+        var ignoreBoundary = false;
+        if (ignoreEndVertices) {
+            if (i === 0) ignoreBoundary = 'start';
+            if (i === lineCoords.length - 2) ignoreBoundary = 'end';
+            if (i === 0 && i + 1 === lineCoords.length - 1) ignoreBoundary = 'both';
+        }
+        if (isPointOnLineSegment(lineCoords[i], lineCoords[i + 1], ptCoords, ignoreBoundary)) return true;
+    }
+    return false;
+}
+
+// See http://stackoverflow.com/a/4833823/1979085
+/**
+ * @private
+ * @param {Position} lineSegmentStart coord pair of start of line
+ * @param {Position} lineSegmentEnd coord pair of end of line
+ * @param {Position} pt coord pair of point to check
+ * @param {boolean|string} excludeBoundary whether the point is allowed to fall on the line ends. If true which end to ignore.
+ * @returns {boolean} true/false
+ */
+function isPointOnLineSegment(lineSegmentStart, lineSegmentEnd, pt, excludeBoundary) {
+    var x = pt[0];
+    var y = pt[1];
+    var x1 = lineSegmentStart[0];
+    var y1 = lineSegmentStart[1];
+    var x2 = lineSegmentEnd[0];
+    var y2 = lineSegmentEnd[1];
+    var dxc = pt[0] - x1;
+    var dyc = pt[1] - y1;
+    var dxl = x2 - x1;
+    var dyl = y2 - y1;
+    var cross = dxc * dyl - dyc * dxl;
+    if (cross !== 0) {
+        return false;
+    }
+    if (!excludeBoundary) {
+        if (Math.abs(dxl) >= Math.abs(dyl)) {
+            return dxl > 0 ? x1 <= x && x <= x2 : x2 <= x && x <= x1;
+        }
+        return dyl > 0 ? y1 <= y && y <= y2 : y2 <= y && y <= y1;
+    } else if (excludeBoundary === 'start') {
+        if (Math.abs(dxl) >= Math.abs(dyl)) {
+            return dxl > 0 ? x1 < x && x <= x2 : x2 <= x && x < x1;
+        }
+        return dyl > 0 ? y1 < y && y <= y2 : y2 <= y && y < y1;
+    } else if (excludeBoundary === 'end') {
+        if (Math.abs(dxl) >= Math.abs(dyl)) {
+            return dxl > 0 ? x1 <= x && x < x2 : x2 < x && x <= x1;
+        }
+        return dyl > 0 ? y1 <= y && y < y2 : y2 < y && y <= y1;
+    } else if (excludeBoundary === 'both') {
+        if (Math.abs(dxl) >= Math.abs(dyl)) {
+            return dxl > 0 ? x1 < x && x < x2 : x2 < x && x < x1;
+        }
+        return dyl > 0 ? y1 < y && y < y2 : y2 < y && y < y1;
+    }
+}
+
+module.exports = booleanPointOnLine;
+module.exports.default = booleanPointOnLine;
+
+},{"@turf/helpers":16,"@turf/invariant":17}],11:[function(require,module,exports){
 'use strict';
 
 function _interopDefault (ex) { return (ex && (typeof ex === 'object') && 'default' in ex) ? ex['default'] : ex; }
 
-var clone = _interopDefault(require('@turf/clone'));
-var distance = _interopDefault(require('@turf/distance'));
-var meta = require('@turf/meta');
+var calcBbox = _interopDefault(require('@turf/bbox'));
+var booleanPointOnLine = _interopDefault(require('@turf/boolean-point-on-line'));
+var booleanPointInPolygon = _interopDefault(require('@turf/boolean-point-in-polygon'));
+var invariant = require('@turf/invariant');
 
 /**
- * Takes a reference {@link Point|point} and a FeatureCollection of Features
- * with Point geometries and returns the
- * point from the FeatureCollection closest to the reference. This calculation
- * is geodesic.
+ * Boolean-within returns true if the first geometry is completely within the second geometry.
+ * The interiors of both geometries must intersect and, the interior and boundary of the primary (geometry a)
+ * must not intersect the exterior of the secondary (geometry b).
+ * Boolean-within returns the exact opposite result of the `@turf/boolean-contains`.
  *
- * @name nearestPoint
- * @param {Coord} targetPoint the reference point
- * @param {FeatureCollection<Point>} points against input point set
- * @returns {Feature<Point>} the closest point in the set to the reference point
+ * @name booleanWithin
+ * @param {Geometry|Feature<any>} feature1 GeoJSON Feature or Geometry
+ * @param {Geometry|Feature<any>} feature2 GeoJSON Feature or Geometry
+ * @returns {boolean} true/false
  * @example
- * var targetPoint = turf.point([28.965797, 41.010086], {"marker-color": "#0F0"});
- * var points = turf.featureCollection([
- *     turf.point([28.973865, 41.011122]),
- *     turf.point([28.948459, 41.024204]),
- *     turf.point([28.938674, 41.013324])
- * ]);
+ * var line = turf.lineString([[1, 1], [1, 2], [1, 3], [1, 4]]);
+ * var point = turf.point([1, 2]);
  *
- * var nearest = turf.nearestPoint(targetPoint, points);
- *
- * //addToMap
- * var addToMap = [targetPoint, points, nearest];
- * nearest.properties['marker-color'] = '#F00';
+ * turf.booleanWithin(point, line);
+ * //=true
  */
-function nearestPoint(targetPoint, points) {
-    // Input validation
-    if (!targetPoint) throw new Error('targetPoint is required');
-    if (!points) throw new Error('points is required');
+function booleanWithin(feature1, feature2) {
+    var type1 = invariant.getType(feature1);
+    var type2 = invariant.getType(feature2);
+    var geom1 = invariant.getGeom(feature1);
+    var geom2 = invariant.getGeom(feature2);
 
-    var nearest;
-    var minDist = Infinity;
-    meta.featureEach(points, function (pt, featureIndex) {
-        var distanceToPoint = distance(targetPoint, pt);
-        if (distanceToPoint < minDist) {
-            nearest = clone(pt);
-            nearest.properties.featureIndex = featureIndex;
-            nearest.properties.distanceToPoint = distanceToPoint;
-            minDist = distanceToPoint;
+    switch (type1) {
+    case 'Point':
+        switch (type2) {
+        case 'MultiPoint':
+            return isPointInMultiPoint(geom1, geom2);
+        case 'LineString':
+            return booleanPointOnLine(geom1, geom2, {ignoreEndVertices: true});
+        case 'Polygon':
+            return booleanPointInPolygon(geom1, geom2, {ignoreBoundary: true});
+        default:
+            throw new Error('feature2 ' + type2 + ' geometry not supported');
         }
-
-    });
-    return nearest;
+    case 'MultiPoint':
+        switch (type2) {
+        case 'MultiPoint':
+            return isMultiPointInMultiPoint(geom1, geom2);
+        case 'LineString':
+            return isMultiPointOnLine(geom1, geom2);
+        case 'Polygon':
+            return isMultiPointInPoly(geom1, geom2);
+        default:
+            throw new Error('feature2 ' + type2 + ' geometry not supported');
+        }
+    case 'LineString':
+        switch (type2) {
+        case 'LineString':
+            return isLineOnLine(geom1, geom2);
+        case 'Polygon':
+            return isLineInPoly(geom1, geom2);
+        default:
+            throw new Error('feature2 ' + type2 + ' geometry not supported');
+        }
+    case 'Polygon':
+        switch (type2) {
+        case 'Polygon':
+            return isPolyInPoly(geom1, geom2);
+        default:
+            throw new Error('feature2 ' + type2 + ' geometry not supported');
+        }
+    default:
+        throw new Error('feature1 ' + type1 + ' geometry not supported');
+    }
 }
 
-module.exports = nearestPoint;
-module.exports.default = nearestPoint;
+function isPointInMultiPoint(point, multiPoint) {
+    var i;
+    var output = false;
+    for (i = 0; i < multiPoint.coordinates.length; i++) {
+        if (compareCoords(multiPoint.coordinates[i], point.coordinates)) {
+            output = true;
+            break;
+        }
+    }
+    return output;
+}
 
-},{"@turf/clone":12,"@turf/distance":13,"@turf/meta":17}],19:[function(require,module,exports){
+function isMultiPointInMultiPoint(multiPoint1, multiPoint2) {
+    for (var i = 0; i < multiPoint1.coordinates.length; i++) {
+        var anyMatch = false;
+        for (var i2 = 0; i2 < multiPoint2.coordinates.length; i2++) {
+            if (compareCoords(multiPoint1.coordinates[i], multiPoint2.coordinates[i2])) {
+                anyMatch = true;
+            }
+        }
+        if (!anyMatch) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function isMultiPointOnLine(multiPoint, lineString) {
+    var foundInsidePoint = false;
+
+    for (var i = 0; i < multiPoint.coordinates.length; i++) {
+        if (!booleanPointOnLine(multiPoint.coordinates[i], lineString)) {
+            return false;
+        }
+        if (!foundInsidePoint) {
+            foundInsidePoint = booleanPointOnLine(multiPoint.coordinates[i], lineString, {ignoreEndVertices: true});
+        }
+    }
+    return foundInsidePoint;
+}
+
+function isMultiPointInPoly(multiPoint, polygon) {
+    var output = true;
+    var oneInside = false;
+    for (var i = 0; i < multiPoint.coordinates.length; i++) {
+        var isInside = booleanPointInPolygon(multiPoint.coordinates[1], polygon);
+        if (!isInside) {
+            output = false;
+            break;
+        }
+        if (!oneInside) {
+            isInside = booleanPointInPolygon(multiPoint.coordinates[1], polygon, {ignoreBoundary: true});
+        }
+    }
+    return output && isInside;
+}
+
+function isLineOnLine(lineString1, lineString2) {
+    for (var i = 0; i < lineString1.coordinates.length; i++) {
+        if (!booleanPointOnLine(lineString1.coordinates[i], lineString2)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function isLineInPoly(linestring, polygon) {
+    var polyBbox = calcBbox(polygon);
+    var lineBbox = calcBbox(linestring);
+    if (!doBBoxOverlap(polyBbox, lineBbox)) {
+        return false;
+    }
+    var foundInsidePoint = false;
+
+    for (var i = 0; i < linestring.coordinates.length - 1; i++) {
+        if (!booleanPointInPolygon(linestring.coordinates[i], polygon)) {
+            return false;
+        }
+        if (!foundInsidePoint) {
+            foundInsidePoint = booleanPointInPolygon(linestring.coordinates[i], polygon, {ignoreBoundary: true});
+        }
+        if (!foundInsidePoint) {
+            var midpoint = getMidpoint(linestring.coordinates[i], linestring.coordinates[i + 1]);
+            foundInsidePoint = booleanPointInPolygon(midpoint, polygon, {ignoreBoundary: true});
+
+        }
+    }
+    return foundInsidePoint;
+}
+
+/**
+ * Is Polygon2 in Polygon1
+ * Only takes into account outer rings
+ *
+ * @private
+ * @param {Geometry|Feature<Polygon>} feature1 Polygon1
+ * @param {Geometry|Feature<Polygon>} feature2 Polygon2
+ * @returns {boolean} true/false
+ */
+function isPolyInPoly(feature1, feature2) {
+    var poly1Bbox = calcBbox(feature1);
+    var poly2Bbox = calcBbox(feature2);
+    if (!doBBoxOverlap(poly2Bbox, poly1Bbox)) {
+        return false;
+    }
+    for (var i = 0; i < feature1.coordinates[0].length; i++) {
+        if (!booleanPointInPolygon(feature1.coordinates[0][i], feature2)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function doBBoxOverlap(bbox1, bbox2) {
+    if (bbox1[0] > bbox2[0]) return false;
+    if (bbox1[2] < bbox2[2]) return false;
+    if (bbox1[1] > bbox2[1]) return false;
+    if (bbox1[3] < bbox2[3]) return false;
+    return true;
+}
+
+/**
+ * compareCoords
+ *
+ * @private
+ * @param {Position} pair1 point [x,y]
+ * @param {Position} pair2 point [x,y]
+ * @returns {boolean} true/false if coord pairs match
+ */
+function compareCoords(pair1, pair2) {
+    return pair1[0] === pair2[0] && pair1[1] === pair2[1];
+}
+
+/**
+ * getMidpoint
+ *
+ * @private
+ * @param {Position} pair1 point [x,y]
+ * @param {Position} pair2 point [x,y]
+ * @returns {Position} midpoint of pair1 and pair2
+ */
+function getMidpoint(pair1, pair2) {
+    return [(pair1[0] + pair2[0]) / 2, (pair1[1] + pair2[1]) / 2];
+}
+
+module.exports = booleanWithin;
+module.exports.default = booleanWithin;
+
+},{"@turf/bbox":7,"@turf/boolean-point-in-polygon":12,"@turf/boolean-point-on-line":10,"@turf/invariant":17}],12:[function(require,module,exports){
+'use strict';
+
+var invariant = require('@turf/invariant');
+
+// http://en.wikipedia.org/wiki/Even%E2%80%93odd_rule
+// modified from: https://github.com/substack/point-in-polygon/blob/master/index.js
+// which was modified from http://www.ecse.rpi.edu/Homepages/wrf/Research/Short_Notes/pnpoly.html
+
+/**
+ * Takes a {@link Point} and a {@link Polygon} or {@link MultiPolygon} and determines if the point resides inside the polygon. The polygon can
+ * be convex or concave. The function accounts for holes.
+ *
+ * @name booleanPointInPolygon
+ * @param {Coord} point input point
+ * @param {Feature<Polygon|MultiPolygon>} polygon input polygon or multipolygon
+ * @param {Object} [options={}] Optional parameters
+ * @param {boolean} [options.ignoreBoundary=false] True if polygon boundary should be ignored when determining if the point is inside the polygon otherwise false.
+ * @returns {boolean} `true` if the Point is inside the Polygon; `false` if the Point is not inside the Polygon
+ * @example
+ * var pt = turf.point([-77, 44]);
+ * var poly = turf.polygon([[
+ *   [-81, 41],
+ *   [-81, 47],
+ *   [-72, 47],
+ *   [-72, 41],
+ *   [-81, 41]
+ * ]]);
+ *
+ * turf.booleanPointInPolygon(pt, poly);
+ * //= true
+ */
+function booleanPointInPolygon(point, polygon, options) {
+    // Optional parameters
+    options = options || {};
+    if (typeof options !== 'object') throw new Error('options is invalid');
+    var ignoreBoundary = options.ignoreBoundary;
+
+    // validation
+    if (!point) throw new Error('point is required');
+    if (!polygon) throw new Error('polygon is required');
+
+    var pt = invariant.getCoord(point);
+    var polys = invariant.getCoords(polygon);
+    var type = (polygon.geometry) ? polygon.geometry.type : polygon.type;
+    var bbox = polygon.bbox;
+
+    // Quick elimination if point is not inside bbox
+    if (bbox && inBBox(pt, bbox) === false) return false;
+
+    // normalize to multipolygon
+    if (type === 'Polygon') polys = [polys];
+
+    for (var i = 0, insidePoly = false; i < polys.length && !insidePoly; i++) {
+        // check if it is in the outer ring first
+        if (inRing(pt, polys[i][0], ignoreBoundary)) {
+            var inHole = false;
+            var k = 1;
+            // check for the point in any of the holes
+            while (k < polys[i].length && !inHole) {
+                if (inRing(pt, polys[i][k], !ignoreBoundary)) {
+                    inHole = true;
+                }
+                k++;
+            }
+            if (!inHole) insidePoly = true;
+        }
+    }
+    return insidePoly;
+}
+
+/**
+ * inRing
+ *
+ * @private
+ * @param {Array<number>} pt [x,y]
+ * @param {Array<Array<number>>} ring [[x,y], [x,y],..]
+ * @param {boolean} ignoreBoundary ignoreBoundary
+ * @returns {boolean} inRing
+ */
+function inRing(pt, ring, ignoreBoundary) {
+    var isInside = false;
+    if (ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring = ring.slice(0, ring.length - 1);
+
+    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        var xi = ring[i][0], yi = ring[i][1];
+        var xj = ring[j][0], yj = ring[j][1];
+        var onBoundary = (pt[1] * (xi - xj) + yi * (xj - pt[0]) + yj * (pt[0] - xi) === 0) &&
+            ((xi - pt[0]) * (xj - pt[0]) <= 0) && ((yi - pt[1]) * (yj - pt[1]) <= 0);
+        if (onBoundary) return !ignoreBoundary;
+        var intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
+        (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi);
+        if (intersect) isInside = !isInside;
+    }
+    return isInside;
+}
+
+/**
+ * inBBox
+ *
+ * @private
+ * @param {Position} pt point [x,y]
+ * @param {BBox} bbox BBox [west, south, east, north]
+ * @returns {boolean} true/false if point is inside BBox
+ */
+function inBBox(pt, bbox) {
+    return bbox[0] <= pt[0] &&
+           bbox[1] <= pt[1] &&
+           bbox[2] >= pt[0] &&
+           bbox[3] >= pt[1];
+}
+
+module.exports = booleanPointInPolygon;
+module.exports.default = booleanPointInPolygon;
+
+},{"@turf/invariant":17}],13:[function(require,module,exports){
+'use strict';
+
+/**
+ * Returns a cloned copy of the passed GeoJSON Object, including possible 'Foreign Members'.
+ * ~3-5x faster than the common JSON.parse + JSON.stringify combo method.
+ *
+ * @name clone
+ * @param {GeoJSON} geojson GeoJSON Object
+ * @returns {GeoJSON} cloned GeoJSON Object
+ * @example
+ * var line = turf.lineString([[-74, 40], [-78, 42], [-82, 35]], {color: 'red'});
+ *
+ * var lineCloned = turf.clone(line);
+ */
+function clone(geojson) {
+    if (!geojson) throw new Error('geojson is required');
+
+    switch (geojson.type) {
+    case 'Feature':
+        return cloneFeature(geojson);
+    case 'FeatureCollection':
+        return cloneFeatureCollection(geojson);
+    case 'Point':
+    case 'LineString':
+    case 'Polygon':
+    case 'MultiPoint':
+    case 'MultiLineString':
+    case 'MultiPolygon':
+    case 'GeometryCollection':
+        return cloneGeometry(geojson);
+    default:
+        throw new Error('unknown GeoJSON type');
+    }
+}
+
+/**
+ * Clone Feature
+ *
+ * @private
+ * @param {Feature<any>} geojson GeoJSON Feature
+ * @returns {Feature<any>} cloned Feature
+ */
+function cloneFeature(geojson) {
+    var cloned = {type: 'Feature'};
+    // Preserve Foreign Members
+    Object.keys(geojson).forEach(function (key) {
+        switch (key) {
+        case 'type':
+        case 'properties':
+        case 'geometry':
+            return;
+        default:
+            cloned[key] = geojson[key];
+        }
+    });
+    // Add properties & geometry last
+    cloned.properties = cloneProperties(geojson.properties);
+    cloned.geometry = cloneGeometry(geojson.geometry);
+    return cloned;
+}
+
+/**
+ * Clone Properties
+ *
+ * @private
+ * @param {Object} properties GeoJSON Properties
+ * @returns {Object} cloned Properties
+ */
+function cloneProperties(properties) {
+    var cloned = {};
+    if (!properties) return cloned;
+    Object.keys(properties).forEach(function (key) {
+        var value = properties[key];
+        if (typeof value === 'object') {
+            if (value === null) {
+                // handle null
+                cloned[key] = null;
+            } else if (value.length) {
+                // handle Array
+                cloned[key] = value.map(function (item) {
+                    return item;
+                });
+            } else {
+                // handle generic Object
+                cloned[key] = cloneProperties(value);
+            }
+        } else cloned[key] = value;
+    });
+    return cloned;
+}
+
+/**
+ * Clone Feature Collection
+ *
+ * @private
+ * @param {FeatureCollection<any>} geojson GeoJSON Feature Collection
+ * @returns {FeatureCollection<any>} cloned Feature Collection
+ */
+function cloneFeatureCollection(geojson) {
+    var cloned = {type: 'FeatureCollection'};
+
+    // Preserve Foreign Members
+    Object.keys(geojson).forEach(function (key) {
+        switch (key) {
+        case 'type':
+        case 'features':
+            return;
+        default:
+            cloned[key] = geojson[key];
+        }
+    });
+    // Add features
+    cloned.features = geojson.features.map(function (feature) {
+        return cloneFeature(feature);
+    });
+    return cloned;
+}
+
+/**
+ * Clone Geometry
+ *
+ * @private
+ * @param {Geometry<any>} geometry GeoJSON Geometry
+ * @returns {Geometry<any>} cloned Geometry
+ */
+function cloneGeometry(geometry) {
+    var geom = {type: geometry.type};
+    if (geometry.bbox) geom.bbox = geometry.bbox;
+
+    if (geometry.type === 'GeometryCollection') {
+        geom.geometries = geometry.geometries.map(function (geom) {
+            return cloneGeometry(geom);
+        });
+        return geom;
+    }
+    geom.coordinates = deepSlice(geometry.coordinates);
+    return geom;
+}
+
+/**
+ * Deep Slice coordinates
+ *
+ * @private
+ * @param {Coordinates} coords Coordinates
+ * @returns {Coordinates} all coordinates sliced
+ */
+function deepSlice(coords) {
+    if (typeof coords[0] !== 'object') { return coords.slice(); }
+    return coords.map(function (coord) {
+        return deepSlice(coord);
+    });
+}
+
+module.exports = clone;
+module.exports.default = clone;
+
+},{}],14:[function(require,module,exports){
+'use strict';
+
+var meta = require('@turf/meta');
+var helpers = require('@turf/helpers');
+
+/**
+ * Flattens any {@link GeoJSON} to a {@link FeatureCollection} inspired by [geojson-flatten](https://github.com/tmcw/geojson-flatten).
+ *
+ * @name flatten
+ * @param {GeoJSON} geojson any valid GeoJSON Object
+ * @returns {FeatureCollection<any>} all Multi-Geometries are flattened into single Features
+ * @example
+ * var multiGeometry = turf.multiPolygon([
+ *   [[[102.0, 2.0], [103.0, 2.0], [103.0, 3.0], [102.0, 3.0], [102.0, 2.0]]],
+ *   [[[100.0, 0.0], [101.0, 0.0], [101.0, 1.0], [100.0, 1.0], [100.0, 0.0]],
+ *   [[100.2, 0.2], [100.8, 0.2], [100.8, 0.8], [100.2, 0.8], [100.2, 0.2]]]
+ * ]);
+ *
+ * var flatten = turf.flatten(multiGeometry);
+ *
+ * //addToMap
+ * var addToMap = [flatten]
+ */
+function flatten(geojson) {
+    if (!geojson) throw new Error('geojson is required');
+
+    var results = [];
+    meta.flattenEach(geojson, function (feature) {
+        results.push(feature);
+    });
+    return helpers.featureCollection(results);
+}
+
+module.exports = flatten;
+module.exports.default = flatten;
+
+},{"@turf/helpers":16,"@turf/meta":15}],15:[function(require,module,exports){
+arguments[4][8][0].apply(exports,arguments)
+},{"@turf/helpers":16,"dup":8}],16:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, '__esModule', { value: true });
+
+/**
+ * Earth Radius used with the Harvesine formula and approximates using a spherical (non-ellipsoid) Earth.
+ */
+var earthRadius = 6371008.8;
+
+/**
+ * Unit of measurement factors using a spherical (non-ellipsoid) earth radius.
+ */
+var factors = {
+    meters: earthRadius,
+    metres: earthRadius,
+    millimeters: earthRadius * 1000,
+    millimetres: earthRadius * 1000,
+    centimeters: earthRadius * 100,
+    centimetres: earthRadius * 100,
+    kilometers: earthRadius / 1000,
+    kilometres: earthRadius / 1000,
+    miles: earthRadius / 1609.344,
+    nauticalmiles: earthRadius / 1852,
+    inches: earthRadius * 39.370,
+    yards: earthRadius / 1.0936,
+    feet: earthRadius * 3.28084,
+    radians: 1,
+    degrees: earthRadius / 111325,
+};
+
+/**
+ * Units of measurement factors based on 1 meter.
+ */
+var unitsFactors = {
+    meters: 1,
+    metres: 1,
+    millimeters: 1000,
+    millimetres: 1000,
+    centimeters: 100,
+    centimetres: 100,
+    kilometers: 1 / 1000,
+    kilometres: 1 / 1000,
+    miles: 1 / 1609.344,
+    nauticalmiles: 1 / 1852,
+    inches: 39.370,
+    yards: 1 / 1.0936,
+    feet: 3.28084,
+    radians: 1 / earthRadius,
+    degrees: 1 / 111325,
+};
+
+/**
+ * Area of measurement factors based on 1 square meter.
+ */
+var areaFactors = {
+    meters: 1,
+    metres: 1,
+    millimeters: 1000000,
+    millimetres: 1000000,
+    centimeters: 10000,
+    centimetres: 10000,
+    kilometers: 0.000001,
+    kilometres: 0.000001,
+    acres: 0.000247105,
+    miles: 3.86e-7,
+    yards: 1.195990046,
+    feet: 10.763910417,
+    inches: 1550.003100006
+};
+
+/**
+ * Wraps a GeoJSON {@link Geometry} in a GeoJSON {@link Feature}.
+ *
+ * @name feature
+ * @param {Geometry} geometry input geometry
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature} a GeoJSON Feature
+ * @example
+ * var geometry = {
+ *   "type": "Point",
+ *   "coordinates": [110, 50]
+ * };
+ *
+ * var feature = turf.feature(geometry);
+ *
+ * //=feature
+ */
+function feature(geometry, properties, options) {
+    // Optional Parameters
+    options = options || {};
+    if (!isObject(options)) throw new Error('options is invalid');
+    var bbox = options.bbox;
+    var id = options.id;
+
+    // Validation
+    if (geometry === undefined) throw new Error('geometry is required');
+    if (properties && properties.constructor !== Object) throw new Error('properties must be an Object');
+    if (bbox) validateBBox(bbox);
+    if (id) validateId(id);
+
+    // Main
+    var feat = {type: 'Feature'};
+    if (id) feat.id = id;
+    if (bbox) feat.bbox = bbox;
+    feat.properties = properties || {};
+    feat.geometry = geometry;
+    return feat;
+}
+
+/**
+ * Creates a GeoJSON {@link Geometry} from a Geometry string type & coordinates.
+ * For GeometryCollection type use `helpers.geometryCollection`
+ *
+ * @name geometry
+ * @param {string} type Geometry Type
+ * @param {Array<number>} coordinates Coordinates
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Geometry
+ * @returns {Geometry} a GeoJSON Geometry
+ * @example
+ * var type = 'Point';
+ * var coordinates = [110, 50];
+ *
+ * var geometry = turf.geometry(type, coordinates);
+ *
+ * //=geometry
+ */
+function geometry(type, coordinates, options) {
+    // Optional Parameters
+    options = options || {};
+    if (!isObject(options)) throw new Error('options is invalid');
+    var bbox = options.bbox;
+
+    // Validation
+    if (!type) throw new Error('type is required');
+    if (!coordinates) throw new Error('coordinates is required');
+    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
+    if (bbox) validateBBox(bbox);
+
+    // Main
+    var geom;
+    switch (type) {
+    case 'Point': geom = point(coordinates).geometry; break;
+    case 'LineString': geom = lineString(coordinates).geometry; break;
+    case 'Polygon': geom = polygon(coordinates).geometry; break;
+    case 'MultiPoint': geom = multiPoint(coordinates).geometry; break;
+    case 'MultiLineString': geom = multiLineString(coordinates).geometry; break;
+    case 'MultiPolygon': geom = multiPolygon(coordinates).geometry; break;
+    default: throw new Error(type + ' is invalid');
+    }
+    if (bbox) geom.bbox = bbox;
+    return geom;
+}
+
+/**
+ * Creates a {@link Point} {@link Feature} from a Position.
+ *
+ * @name point
+ * @param {Array<number>} coordinates longitude, latitude position (each in decimal degrees)
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<Point>} a Point feature
+ * @example
+ * var point = turf.point([-75.343, 39.984]);
+ *
+ * //=point
+ */
+function point(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
+    if (coordinates.length < 2) throw new Error('coordinates must be at least 2 numbers long');
+    if (!isNumber(coordinates[0]) || !isNumber(coordinates[1])) throw new Error('coordinates must contain numbers');
+
+    return feature({
+        type: 'Point',
+        coordinates: coordinates
+    }, properties, options);
+}
+
+/**
+ * Creates a {@link Point} {@link FeatureCollection} from an Array of Point coordinates.
+ *
+ * @name points
+ * @param {Array<Array<number>>} coordinates an array of Points
+ * @param {Object} [properties={}] Translate these properties to each Feature
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the FeatureCollection
+ * @param {string|number} [options.id] Identifier associated with the FeatureCollection
+ * @returns {FeatureCollection<Point>} Point Feature
+ * @example
+ * var points = turf.points([
+ *   [-75, 39],
+ *   [-80, 45],
+ *   [-78, 50]
+ * ]);
+ *
+ * //=points
+ */
+function points(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
+
+    return featureCollection(coordinates.map(function (coords) {
+        return point(coords, properties);
+    }), options);
+}
+
+/**
+ * Creates a {@link Polygon} {@link Feature} from an Array of LinearRings.
+ *
+ * @name polygon
+ * @param {Array<Array<Array<number>>>} coordinates an array of LinearRings
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<Polygon>} Polygon Feature
+ * @example
+ * var polygon = turf.polygon([[[-5, 52], [-4, 56], [-2, 51], [-7, 54], [-5, 52]]], { name: 'poly1' });
+ *
+ * //=polygon
+ */
+function polygon(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+
+    for (var i = 0; i < coordinates.length; i++) {
+        var ring = coordinates[i];
+        if (ring.length < 4) {
+            throw new Error('Each LinearRing of a Polygon must have 4 or more Positions.');
+        }
+        for (var j = 0; j < ring[ring.length - 1].length; j++) {
+            // Check if first point of Polygon contains two numbers
+            if (i === 0 && j === 0 && !isNumber(ring[0][0]) || !isNumber(ring[0][1])) throw new Error('coordinates must contain numbers');
+            if (ring[ring.length - 1][j] !== ring[0][j]) {
+                throw new Error('First and last Position are not equivalent.');
+            }
+        }
+    }
+
+    return feature({
+        type: 'Polygon',
+        coordinates: coordinates
+    }, properties, options);
+}
+
+/**
+ * Creates a {@link Polygon} {@link FeatureCollection} from an Array of Polygon coordinates.
+ *
+ * @name polygons
+ * @param {Array<Array<Array<Array<number>>>>} coordinates an array of Polygon coordinates
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the FeatureCollection
+ * @returns {FeatureCollection<Polygon>} Polygon FeatureCollection
+ * @example
+ * var polygons = turf.polygons([
+ *   [[[-5, 52], [-4, 56], [-2, 51], [-7, 54], [-5, 52]]],
+ *   [[[-15, 42], [-14, 46], [-12, 41], [-17, 44], [-15, 42]]],
+ * ]);
+ *
+ * //=polygons
+ */
+function polygons(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
+
+    return featureCollection(coordinates.map(function (coords) {
+        return polygon(coords, properties);
+    }), options);
+}
+
+/**
+ * Creates a {@link LineString} {@link Feature} from an Array of Positions.
+ *
+ * @name lineString
+ * @param {Array<Array<number>>} coordinates an array of Positions
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<LineString>} LineString Feature
+ * @example
+ * var linestring1 = turf.lineString([[-24, 63], [-23, 60], [-25, 65], [-20, 69]], {name: 'line 1'});
+ * var linestring2 = turf.lineString([[-14, 43], [-13, 40], [-15, 45], [-10, 49]], {name: 'line 2'});
+ *
+ * //=linestring1
+ * //=linestring2
+ */
+function lineString(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+    if (coordinates.length < 2) throw new Error('coordinates must be an array of two or more positions');
+    // Check if first point of LineString contains two numbers
+    if (!isNumber(coordinates[0][1]) || !isNumber(coordinates[0][1])) throw new Error('coordinates must contain numbers');
+
+    return feature({
+        type: 'LineString',
+        coordinates: coordinates
+    }, properties, options);
+}
+
+/**
+ * Creates a {@link LineString} {@link FeatureCollection} from an Array of LineString coordinates.
+ *
+ * @name lineStrings
+ * @param {Array<Array<number>>} coordinates an array of LinearRings
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the FeatureCollection
+ * @param {string|number} [options.id] Identifier associated with the FeatureCollection
+ * @returns {FeatureCollection<LineString>} LineString FeatureCollection
+ * @example
+ * var linestrings = turf.lineStrings([
+ *   [[-24, 63], [-23, 60], [-25, 65], [-20, 69]],
+ *   [[-14, 43], [-13, 40], [-15, 45], [-10, 49]]
+ * ]);
+ *
+ * //=linestrings
+ */
+function lineStrings(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+    if (!Array.isArray(coordinates)) throw new Error('coordinates must be an Array');
+
+    return featureCollection(coordinates.map(function (coords) {
+        return lineString(coords, properties);
+    }), options);
+}
+
+/**
+ * Takes one or more {@link Feature|Features} and creates a {@link FeatureCollection}.
+ *
+ * @name featureCollection
+ * @param {Feature[]} features input features
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {FeatureCollection} FeatureCollection of Features
+ * @example
+ * var locationA = turf.point([-75.343, 39.984], {name: 'Location A'});
+ * var locationB = turf.point([-75.833, 39.284], {name: 'Location B'});
+ * var locationC = turf.point([-75.534, 39.123], {name: 'Location C'});
+ *
+ * var collection = turf.featureCollection([
+ *   locationA,
+ *   locationB,
+ *   locationC
+ * ]);
+ *
+ * //=collection
+ */
+function featureCollection(features, options) {
+    // Optional Parameters
+    options = options || {};
+    if (!isObject(options)) throw new Error('options is invalid');
+    var bbox = options.bbox;
+    var id = options.id;
+
+    // Validation
+    if (!features) throw new Error('No features passed');
+    if (!Array.isArray(features)) throw new Error('features must be an Array');
+    if (bbox) validateBBox(bbox);
+    if (id) validateId(id);
+
+    // Main
+    var fc = {type: 'FeatureCollection'};
+    if (id) fc.id = id;
+    if (bbox) fc.bbox = bbox;
+    fc.features = features;
+    return fc;
+}
+
+/**
+ * Creates a {@link Feature<MultiLineString>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name multiLineString
+ * @param {Array<Array<Array<number>>>} coordinates an array of LineStrings
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<MultiLineString>} a MultiLineString feature
+ * @throws {Error} if no coordinates are passed
+ * @example
+ * var multiLine = turf.multiLineString([[[0,0],[10,10]]]);
+ *
+ * //=multiLine
+ */
+function multiLineString(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+
+    return feature({
+        type: 'MultiLineString',
+        coordinates: coordinates
+    }, properties, options);
+}
+
+/**
+ * Creates a {@link Feature<MultiPoint>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name multiPoint
+ * @param {Array<Array<number>>} coordinates an array of Positions
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<MultiPoint>} a MultiPoint feature
+ * @throws {Error} if no coordinates are passed
+ * @example
+ * var multiPt = turf.multiPoint([[0,0],[10,10]]);
+ *
+ * //=multiPt
+ */
+function multiPoint(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+
+    return feature({
+        type: 'MultiPoint',
+        coordinates: coordinates
+    }, properties, options);
+}
+
+/**
+ * Creates a {@link Feature<MultiPolygon>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name multiPolygon
+ * @param {Array<Array<Array<Array<number>>>>} coordinates an array of Polygons
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<MultiPolygon>} a multipolygon feature
+ * @throws {Error} if no coordinates are passed
+ * @example
+ * var multiPoly = turf.multiPolygon([[[[0,0],[0,10],[10,10],[10,0],[0,0]]]]);
+ *
+ * //=multiPoly
+ *
+ */
+function multiPolygon(coordinates, properties, options) {
+    if (!coordinates) throw new Error('coordinates is required');
+
+    return feature({
+        type: 'MultiPolygon',
+        coordinates: coordinates
+    }, properties, options);
+}
+
+/**
+ * Creates a {@link Feature<GeometryCollection>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name geometryCollection
+ * @param {Array<Geometry>} geometries an array of GeoJSON Geometries
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<GeometryCollection>} a GeoJSON GeometryCollection Feature
+ * @example
+ * var pt = {
+ *     "type": "Point",
+ *       "coordinates": [100, 0]
+ *     };
+ * var line = {
+ *     "type": "LineString",
+ *     "coordinates": [ [101, 0], [102, 1] ]
+ *   };
+ * var collection = turf.geometryCollection([pt, line]);
+ *
+ * //=collection
+ */
+function geometryCollection(geometries, properties, options) {
+    if (!geometries) throw new Error('geometries is required');
+    if (!Array.isArray(geometries)) throw new Error('geometries must be an Array');
+
+    return feature({
+        type: 'GeometryCollection',
+        geometries: geometries
+    }, properties, options);
+}
+
+/**
+ * Round number to precision
+ *
+ * @param {number} num Number
+ * @param {number} [precision=0] Precision
+ * @returns {number} rounded number
+ * @example
+ * turf.round(120.4321)
+ * //=120
+ *
+ * turf.round(120.4321, 2)
+ * //=120.43
+ */
+function round(num, precision) {
+    if (num === undefined || num === null || isNaN(num)) throw new Error('num is required');
+    if (precision && !(precision >= 0)) throw new Error('precision must be a positive number');
+    var multiplier = Math.pow(10, precision || 0);
+    return Math.round(num * multiplier) / multiplier;
+}
+
+/**
+ * Convert a distance measurement (assuming a spherical Earth) from radians to a more friendly unit.
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
+ *
+ * @name radiansToLength
+ * @param {number} radians in radians across the sphere
+ * @param {string} [units='kilometers'] can be degrees, radians, miles, or kilometers inches, yards, metres, meters, kilometres, kilometers.
+ * @returns {number} distance
+ */
+function radiansToLength(radians, units) {
+    if (radians === undefined || radians === null) throw new Error('radians is required');
+
+    if (units && typeof units !== 'string') throw new Error('units must be a string');
+    var factor = factors[units || 'kilometers'];
+    if (!factor) throw new Error(units + ' units is invalid');
+    return radians * factor;
+}
+
+/**
+ * Convert a distance measurement (assuming a spherical Earth) from a real-world unit into radians
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
+ *
+ * @name lengthToRadians
+ * @param {number} distance in real units
+ * @param {string} [units='kilometers'] can be degrees, radians, miles, or kilometers inches, yards, metres, meters, kilometres, kilometers.
+ * @returns {number} radians
+ */
+function lengthToRadians(distance, units) {
+    if (distance === undefined || distance === null) throw new Error('distance is required');
+
+    if (units && typeof units !== 'string') throw new Error('units must be a string');
+    var factor = factors[units || 'kilometers'];
+    if (!factor) throw new Error(units + ' units is invalid');
+    return distance / factor;
+}
+
+/**
+ * Convert a distance measurement (assuming a spherical Earth) from a real-world unit into degrees
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, centimeters, kilometres, feet
+ *
+ * @name lengthToDegrees
+ * @param {number} distance in real units
+ * @param {string} [units='kilometers'] can be degrees, radians, miles, or kilometers inches, yards, metres, meters, kilometres, kilometers.
+ * @returns {number} degrees
+ */
+function lengthToDegrees(distance, units) {
+    return radiansToDegrees(lengthToRadians(distance, units));
+}
+
+/**
+ * Converts any bearing angle from the north line direction (positive clockwise)
+ * and returns an angle between 0-360 degrees (positive clockwise), 0 being the north line
+ *
+ * @name bearingToAzimuth
+ * @param {number} bearing angle, between -180 and +180 degrees
+ * @returns {number} angle between 0 and 360 degrees
+ */
+function bearingToAzimuth(bearing) {
+    if (bearing === null || bearing === undefined) throw new Error('bearing is required');
+
+    var angle = bearing % 360;
+    if (angle < 0) angle += 360;
+    return angle;
+}
+
+/**
+ * Converts an angle in radians to degrees
+ *
+ * @name radiansToDegrees
+ * @param {number} radians angle in radians
+ * @returns {number} degrees between 0 and 360 degrees
+ */
+function radiansToDegrees(radians) {
+    if (radians === null || radians === undefined) throw new Error('radians is required');
+
+    var degrees = radians % (2 * Math.PI);
+    return degrees * 180 / Math.PI;
+}
+
+/**
+ * Converts an angle in degrees to radians
+ *
+ * @name degreesToRadians
+ * @param {number} degrees angle between 0 and 360 degrees
+ * @returns {number} angle in radians
+ */
+function degreesToRadians(degrees) {
+    if (degrees === null || degrees === undefined) throw new Error('degrees is required');
+
+    var radians = degrees % 360;
+    return radians * Math.PI / 180;
+}
+
+/**
+ * Converts a length to the requested unit.
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
+ *
+ * @param {number} length to be converted
+ * @param {string} originalUnit of the length
+ * @param {string} [finalUnit='kilometers'] returned unit
+ * @returns {number} the converted length
+ */
+function convertLength(length, originalUnit, finalUnit) {
+    if (length === null || length === undefined) throw new Error('length is required');
+    if (!(length >= 0)) throw new Error('length must be a positive number');
+
+    return radiansToLength(lengthToRadians(length, originalUnit), finalUnit || 'kilometers');
+}
+
+/**
+ * Converts a area to the requested unit.
+ * Valid units: kilometers, kilometres, meters, metres, centimetres, millimeters, acres, miles, yards, feet, inches
+ * @param {number} area to be converted
+ * @param {string} [originalUnit='meters'] of the distance
+ * @param {string} [finalUnit='kilometers'] returned unit
+ * @returns {number} the converted distance
+ */
+function convertArea(area, originalUnit, finalUnit) {
+    if (area === null || area === undefined) throw new Error('area is required');
+    if (!(area >= 0)) throw new Error('area must be a positive number');
+
+    var startFactor = areaFactors[originalUnit || 'meters'];
+    if (!startFactor) throw new Error('invalid original units');
+
+    var finalFactor = areaFactors[finalUnit || 'kilometers'];
+    if (!finalFactor) throw new Error('invalid final units');
+
+    return (area / startFactor) * finalFactor;
+}
+
+/**
+ * isNumber
+ *
+ * @param {*} num Number to validate
+ * @returns {boolean} true/false
+ * @example
+ * turf.isNumber(123)
+ * //=true
+ * turf.isNumber('foo')
+ * //=false
+ */
+function isNumber(num) {
+    return !isNaN(num) && num !== null && !Array.isArray(num);
+}
+
+/**
+ * isObject
+ *
+ * @param {*} input variable to validate
+ * @returns {boolean} true/false
+ * @example
+ * turf.isObject({elevation: 10})
+ * //=true
+ * turf.isObject('foo')
+ * //=false
+ */
+function isObject(input) {
+    return (!!input) && (input.constructor === Object);
+}
+
+/**
+ * Validate BBox
+ *
+ * @private
+ * @param {Array<number>} bbox BBox to validate
+ * @returns {void}
+ * @throws Error if BBox is not valid
+ * @example
+ * validateBBox([-180, -40, 110, 50])
+ * //=OK
+ * validateBBox([-180, -40])
+ * //=Error
+ * validateBBox('Foo')
+ * //=Error
+ * validateBBox(5)
+ * //=Error
+ * validateBBox(null)
+ * //=Error
+ * validateBBox(undefined)
+ * //=Error
+ */
+function validateBBox(bbox) {
+    if (!bbox) throw new Error('bbox is required');
+    if (!Array.isArray(bbox)) throw new Error('bbox must be an Array');
+    if (bbox.length !== 4 && bbox.length !== 6) throw new Error('bbox must be an Array of 4 or 6 numbers');
+    bbox.forEach(function (num) {
+        if (!isNumber(num)) throw new Error('bbox must only contain numbers');
+    });
+}
+
+/**
+ * Validate Id
+ *
+ * @private
+ * @param {string|number} id Id to validate
+ * @returns {void}
+ * @throws Error if Id is not valid
+ * @example
+ * validateId([-180, -40, 110, 50])
+ * //=Error
+ * validateId([-180, -40])
+ * //=Error
+ * validateId('Foo')
+ * //=OK
+ * validateId(5)
+ * //=OK
+ * validateId(null)
+ * //=Error
+ * validateId(undefined)
+ * //=Error
+ */
+function validateId(id) {
+    if (!id) throw new Error('id is required');
+    if (['string', 'number'].indexOf(typeof id) === -1) throw new Error('id must be a number or a string');
+}
+
+// Deprecated methods
+function radians2degrees() {
+    throw new Error('method has been renamed to `radiansToDegrees`');
+}
+
+function degrees2radians() {
+    throw new Error('method has been renamed to `degreesToRadians`');
+}
+
+function distanceToDegrees() {
+    throw new Error('method has been renamed to `lengthToDegrees`');
+}
+
+function distanceToRadians() {
+    throw new Error('method has been renamed to `lengthToRadians`');
+}
+
+function radiansToDistance() {
+    throw new Error('method has been renamed to `radiansToLength`');
+}
+
+function bearingToAngle() {
+    throw new Error('method has been renamed to `bearingToAzimuth`');
+}
+
+function convertDistance() {
+    throw new Error('method has been renamed to `convertLength`');
+}
+
+exports.earthRadius = earthRadius;
+exports.factors = factors;
+exports.unitsFactors = unitsFactors;
+exports.areaFactors = areaFactors;
+exports.feature = feature;
+exports.geometry = geometry;
+exports.point = point;
+exports.points = points;
+exports.polygon = polygon;
+exports.polygons = polygons;
+exports.lineString = lineString;
+exports.lineStrings = lineStrings;
+exports.featureCollection = featureCollection;
+exports.multiLineString = multiLineString;
+exports.multiPoint = multiPoint;
+exports.multiPolygon = multiPolygon;
+exports.geometryCollection = geometryCollection;
+exports.round = round;
+exports.radiansToLength = radiansToLength;
+exports.lengthToRadians = lengthToRadians;
+exports.lengthToDegrees = lengthToDegrees;
+exports.bearingToAzimuth = bearingToAzimuth;
+exports.radiansToDegrees = radiansToDegrees;
+exports.degreesToRadians = degreesToRadians;
+exports.convertLength = convertLength;
+exports.convertArea = convertArea;
+exports.isNumber = isNumber;
+exports.isObject = isObject;
+exports.validateBBox = validateBBox;
+exports.validateId = validateId;
+exports.radians2degrees = radians2degrees;
+exports.degrees2radians = degrees2radians;
+exports.distanceToDegrees = distanceToDegrees;
+exports.distanceToRadians = distanceToRadians;
+exports.radiansToDistance = radiansToDistance;
+exports.bearingToAngle = bearingToAngle;
+exports.convertDistance = convertDistance;
+
+},{}],17:[function(require,module,exports){
+'use strict';
+
+Object.defineProperty(exports, '__esModule', { value: true });
+
+var helpers = require('@turf/helpers');
+
+/**
+ * Unwrap a coordinate from a Point Feature, Geometry or a single coordinate.
+ *
+ * @name getCoord
+ * @param {Array<number>|Geometry<Point>|Feature<Point>} coord GeoJSON Point or an Array of numbers
+ * @returns {Array<number>} coordinates
+ * @example
+ * var pt = turf.point([10, 10]);
+ *
+ * var coord = turf.getCoord(pt);
+ * //= [10, 10]
+ */
+function getCoord(coord) {
+    if (!coord) throw new Error('coord is required');
+    if (coord.type === 'Feature' && coord.geometry !== null && coord.geometry.type === 'Point') return coord.geometry.coordinates;
+    if (coord.type === 'Point') return coord.coordinates;
+    if (Array.isArray(coord) && coord.length >= 2 && coord[0].length === undefined && coord[1].length === undefined) return coord;
+
+    throw new Error('coord must be GeoJSON Point or an Array of numbers');
+}
+
+/**
+ * Unwrap coordinates from a Feature, Geometry Object or an Array
+ *
+ * @name getCoords
+ * @param {Array<any>|Geometry|Feature} coords Feature, Geometry Object or an Array
+ * @returns {Array<any>} coordinates
+ * @example
+ * var poly = turf.polygon([[[119.32, -8.7], [119.55, -8.69], [119.51, -8.54], [119.32, -8.7]]]);
+ *
+ * var coords = turf.getCoords(poly);
+ * //= [[[119.32, -8.7], [119.55, -8.69], [119.51, -8.54], [119.32, -8.7]]]
+ */
+function getCoords(coords) {
+    if (!coords) throw new Error('coords is required');
+
+    // Feature
+    if (coords.type === 'Feature' && coords.geometry !== null) return coords.geometry.coordinates;
+
+    // Geometry
+    if (coords.coordinates) return coords.coordinates;
+
+    // Array of numbers
+    if (Array.isArray(coords)) return coords;
+
+    throw new Error('coords must be GeoJSON Feature, Geometry Object or an Array');
+}
+
+/**
+ * Checks if coordinates contains a number
+ *
+ * @name containsNumber
+ * @param {Array<any>} coordinates GeoJSON Coordinates
+ * @returns {boolean} true if Array contains a number
+ */
+function containsNumber(coordinates) {
+    if (coordinates.length > 1 && helpers.isNumber(coordinates[0]) && helpers.isNumber(coordinates[1])) {
+        return true;
+    }
+
+    if (Array.isArray(coordinates[0]) && coordinates[0].length) {
+        return containsNumber(coordinates[0]);
+    }
+    throw new Error('coordinates must only contain numbers');
+}
+
+/**
+ * Enforce expectations about types of GeoJSON objects for Turf.
+ *
+ * @name geojsonType
+ * @param {GeoJSON} value any GeoJSON object
+ * @param {string} type expected GeoJSON type
+ * @param {string} name name of calling function
+ * @throws {Error} if value is not the expected type.
+ */
+function geojsonType(value, type, name) {
+    if (!type || !name) throw new Error('type and name required');
+
+    if (!value || value.type !== type) {
+        throw new Error('Invalid input to ' + name + ': must be a ' + type + ', given ' + value.type);
+    }
+}
+
+/**
+ * Enforce expectations about types of {@link Feature} inputs for Turf.
+ * Internally this uses {@link geojsonType} to judge geometry types.
+ *
+ * @name featureOf
+ * @param {Feature} feature a feature with an expected geometry type
+ * @param {string} type expected GeoJSON type
+ * @param {string} name name of calling function
+ * @throws {Error} error if value is not the expected type.
+ */
+function featureOf(feature, type, name) {
+    if (!feature) throw new Error('No feature passed');
+    if (!name) throw new Error('.featureOf() requires a name');
+    if (!feature || feature.type !== 'Feature' || !feature.geometry) {
+        throw new Error('Invalid input to ' + name + ', Feature with geometry required');
+    }
+    if (!feature.geometry || feature.geometry.type !== type) {
+        throw new Error('Invalid input to ' + name + ': must be a ' + type + ', given ' + feature.geometry.type);
+    }
+}
+
+/**
+ * Enforce expectations about types of {@link FeatureCollection} inputs for Turf.
+ * Internally this uses {@link geojsonType} to judge geometry types.
+ *
+ * @name collectionOf
+ * @param {FeatureCollection} featureCollection a FeatureCollection for which features will be judged
+ * @param {string} type expected GeoJSON type
+ * @param {string} name name of calling function
+ * @throws {Error} if value is not the expected type.
+ */
+function collectionOf(featureCollection, type, name) {
+    if (!featureCollection) throw new Error('No featureCollection passed');
+    if (!name) throw new Error('.collectionOf() requires a name');
+    if (!featureCollection || featureCollection.type !== 'FeatureCollection') {
+        throw new Error('Invalid input to ' + name + ', FeatureCollection required');
+    }
+    for (var i = 0; i < featureCollection.features.length; i++) {
+        var feature = featureCollection.features[i];
+        if (!feature || feature.type !== 'Feature' || !feature.geometry) {
+            throw new Error('Invalid input to ' + name + ', Feature with geometry required');
+        }
+        if (!feature.geometry || feature.geometry.type !== type) {
+            throw new Error('Invalid input to ' + name + ': must be a ' + type + ', given ' + feature.geometry.type);
+        }
+    }
+}
+
+/**
+ * Get Geometry from Feature or Geometry Object
+ *
+ * @param {Feature|Geometry} geojson GeoJSON Feature or Geometry Object
+ * @returns {Geometry|null} GeoJSON Geometry Object
+ * @throws {Error} if geojson is not a Feature or Geometry Object
+ * @example
+ * var point = {
+ *   "type": "Feature",
+ *   "properties": {},
+ *   "geometry": {
+ *     "type": "Point",
+ *     "coordinates": [110, 40]
+ *   }
+ * }
+ * var geom = turf.getGeom(point)
+ * //={"type": "Point", "coordinates": [110, 40]}
+ */
+function getGeom(geojson) {
+    if (!geojson) throw new Error('geojson is required');
+    if (geojson.geometry !== undefined) return geojson.geometry;
+    if (geojson.coordinates || geojson.geometries) return geojson;
+    throw new Error('geojson must be a valid Feature or Geometry Object');
+}
+
+/**
+ * Get Geometry Type from Feature or Geometry Object
+ *
+ * @throws {Error} **DEPRECATED** in v5.0.0 in favor of getType
+ */
+function getGeomType() {
+    throw new Error('invariant.getGeomType has been deprecated in v5.0 in favor of invariant.getType');
+}
+
+/**
+ * Get GeoJSON object's type, Geometry type is prioritize.
+ *
+ * @param {GeoJSON} geojson GeoJSON object
+ * @param {string} [name="geojson"] name of the variable to display in error message
+ * @returns {string} GeoJSON type
+ * @example
+ * var point = {
+ *   "type": "Feature",
+ *   "properties": {},
+ *   "geometry": {
+ *     "type": "Point",
+ *     "coordinates": [110, 40]
+ *   }
+ * }
+ * var geom = turf.getType(point)
+ * //="Point"
+ */
+function getType(geojson, name) {
+    if (!geojson) throw new Error((name || 'geojson') + ' is required');
+    // GeoJSON Feature & GeometryCollection
+    if (geojson.geometry && geojson.geometry.type) return geojson.geometry.type;
+    // GeoJSON Geometry & FeatureCollection
+    if (geojson.type) return geojson.type;
+    throw new Error((name || 'geojson') + ' is invalid');
+}
+
+exports.getCoord = getCoord;
+exports.getCoords = getCoords;
+exports.containsNumber = containsNumber;
+exports.geojsonType = geojsonType;
+exports.featureOf = featureOf;
+exports.collectionOf = collectionOf;
+exports.getGeom = getGeom;
+exports.getGeomType = getGeomType;
+exports.getType = getType;
+
+},{"@turf/helpers":16}],18:[function(require,module,exports){
+arguments[4][8][0].apply(exports,arguments)
+},{"@turf/helpers":19,"dup":8}],19:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+/**
+ * @module helpers
+ */
+/**
+ * Earth Radius used with the Harvesine formula and approximates using a spherical (non-ellipsoid) Earth.
+ *
+ * @memberof helpers
+ * @type {number}
+ */
+exports.earthRadius = 6371008.8;
+/**
+ * Unit of measurement factors using a spherical (non-ellipsoid) earth radius.
+ *
+ * @memberof helpers
+ * @type {Object}
+ */
+exports.factors = {
+    centimeters: exports.earthRadius * 100,
+    centimetres: exports.earthRadius * 100,
+    degrees: exports.earthRadius / 111325,
+    feet: exports.earthRadius * 3.28084,
+    inches: exports.earthRadius * 39.370,
+    kilometers: exports.earthRadius / 1000,
+    kilometres: exports.earthRadius / 1000,
+    meters: exports.earthRadius,
+    metres: exports.earthRadius,
+    miles: exports.earthRadius / 1609.344,
+    millimeters: exports.earthRadius * 1000,
+    millimetres: exports.earthRadius * 1000,
+    nauticalmiles: exports.earthRadius / 1852,
+    radians: 1,
+    yards: exports.earthRadius / 1.0936,
+};
+/**
+ * Units of measurement factors based on 1 meter.
+ *
+ * @memberof helpers
+ * @type {Object}
+ */
+exports.unitsFactors = {
+    centimeters: 100,
+    centimetres: 100,
+    degrees: 1 / 111325,
+    feet: 3.28084,
+    inches: 39.370,
+    kilometers: 1 / 1000,
+    kilometres: 1 / 1000,
+    meters: 1,
+    metres: 1,
+    miles: 1 / 1609.344,
+    millimeters: 1000,
+    millimetres: 1000,
+    nauticalmiles: 1 / 1852,
+    radians: 1 / exports.earthRadius,
+    yards: 1 / 1.0936,
+};
+/**
+ * Area of measurement factors based on 1 square meter.
+ *
+ * @memberof helpers
+ * @type {Object}
+ */
+exports.areaFactors = {
+    acres: 0.000247105,
+    centimeters: 10000,
+    centimetres: 10000,
+    feet: 10.763910417,
+    inches: 1550.003100006,
+    kilometers: 0.000001,
+    kilometres: 0.000001,
+    meters: 1,
+    metres: 1,
+    miles: 3.86e-7,
+    millimeters: 1000000,
+    millimetres: 1000000,
+    yards: 1.195990046,
+};
+/**
+ * Wraps a GeoJSON {@link Geometry} in a GeoJSON {@link Feature}.
+ *
+ * @name feature
+ * @param {Geometry} geometry input geometry
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature} a GeoJSON Feature
+ * @example
+ * var geometry = {
+ *   "type": "Point",
+ *   "coordinates": [110, 50]
+ * };
+ *
+ * var feature = turf.feature(geometry);
+ *
+ * //=feature
+ */
+function feature(geom, properties, options) {
+    if (options === void 0) { options = {}; }
+    var feat = { type: "Feature" };
+    if (options.id === 0 || options.id) {
+        feat.id = options.id;
+    }
+    if (options.bbox) {
+        feat.bbox = options.bbox;
+    }
+    feat.properties = properties || {};
+    feat.geometry = geom;
+    return feat;
+}
+exports.feature = feature;
+/**
+ * Creates a GeoJSON {@link Geometry} from a Geometry string type & coordinates.
+ * For GeometryCollection type use `helpers.geometryCollection`
+ *
+ * @name geometry
+ * @param {string} type Geometry Type
+ * @param {Array<any>} coordinates Coordinates
+ * @param {Object} [options={}] Optional Parameters
+ * @returns {Geometry} a GeoJSON Geometry
+ * @example
+ * var type = "Point";
+ * var coordinates = [110, 50];
+ * var geometry = turf.geometry(type, coordinates);
+ * // => geometry
+ */
+function geometry(type, coordinates, options) {
+    if (options === void 0) { options = {}; }
+    switch (type) {
+        case "Point": return point(coordinates).geometry;
+        case "LineString": return lineString(coordinates).geometry;
+        case "Polygon": return polygon(coordinates).geometry;
+        case "MultiPoint": return multiPoint(coordinates).geometry;
+        case "MultiLineString": return multiLineString(coordinates).geometry;
+        case "MultiPolygon": return multiPolygon(coordinates).geometry;
+        default: throw new Error(type + " is invalid");
+    }
+}
+exports.geometry = geometry;
+/**
+ * Creates a {@link Point} {@link Feature} from a Position.
+ *
+ * @name point
+ * @param {Array<number>} coordinates longitude, latitude position (each in decimal degrees)
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<Point>} a Point feature
+ * @example
+ * var point = turf.point([-75.343, 39.984]);
+ *
+ * //=point
+ */
+function point(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    var geom = {
+        type: "Point",
+        coordinates: coordinates,
+    };
+    return feature(geom, properties, options);
+}
+exports.point = point;
+/**
+ * Creates a {@link Point} {@link FeatureCollection} from an Array of Point coordinates.
+ *
+ * @name points
+ * @param {Array<Array<number>>} coordinates an array of Points
+ * @param {Object} [properties={}] Translate these properties to each Feature
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north]
+ * associated with the FeatureCollection
+ * @param {string|number} [options.id] Identifier associated with the FeatureCollection
+ * @returns {FeatureCollection<Point>} Point Feature
+ * @example
+ * var points = turf.points([
+ *   [-75, 39],
+ *   [-80, 45],
+ *   [-78, 50]
+ * ]);
+ *
+ * //=points
+ */
+function points(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    return featureCollection(coordinates.map(function (coords) {
+        return point(coords, properties);
+    }), options);
+}
+exports.points = points;
+/**
+ * Creates a {@link Polygon} {@link Feature} from an Array of LinearRings.
+ *
+ * @name polygon
+ * @param {Array<Array<Array<number>>>} coordinates an array of LinearRings
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<Polygon>} Polygon Feature
+ * @example
+ * var polygon = turf.polygon([[[-5, 52], [-4, 56], [-2, 51], [-7, 54], [-5, 52]]], { name: 'poly1' });
+ *
+ * //=polygon
+ */
+function polygon(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    for (var _i = 0, coordinates_1 = coordinates; _i < coordinates_1.length; _i++) {
+        var ring = coordinates_1[_i];
+        if (ring.length < 4) {
+            throw new Error("Each LinearRing of a Polygon must have 4 or more Positions.");
+        }
+        for (var j = 0; j < ring[ring.length - 1].length; j++) {
+            // Check if first point of Polygon contains two numbers
+            if (ring[ring.length - 1][j] !== ring[0][j]) {
+                throw new Error("First and last Position are not equivalent.");
+            }
+        }
+    }
+    var geom = {
+        type: "Polygon",
+        coordinates: coordinates,
+    };
+    return feature(geom, properties, options);
+}
+exports.polygon = polygon;
+/**
+ * Creates a {@link Polygon} {@link FeatureCollection} from an Array of Polygon coordinates.
+ *
+ * @name polygons
+ * @param {Array<Array<Array<Array<number>>>>} coordinates an array of Polygon coordinates
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the FeatureCollection
+ * @returns {FeatureCollection<Polygon>} Polygon FeatureCollection
+ * @example
+ * var polygons = turf.polygons([
+ *   [[[-5, 52], [-4, 56], [-2, 51], [-7, 54], [-5, 52]]],
+ *   [[[-15, 42], [-14, 46], [-12, 41], [-17, 44], [-15, 42]]],
+ * ]);
+ *
+ * //=polygons
+ */
+function polygons(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    return featureCollection(coordinates.map(function (coords) {
+        return polygon(coords, properties);
+    }), options);
+}
+exports.polygons = polygons;
+/**
+ * Creates a {@link LineString} {@link Feature} from an Array of Positions.
+ *
+ * @name lineString
+ * @param {Array<Array<number>>} coordinates an array of Positions
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<LineString>} LineString Feature
+ * @example
+ * var linestring1 = turf.lineString([[-24, 63], [-23, 60], [-25, 65], [-20, 69]], {name: 'line 1'});
+ * var linestring2 = turf.lineString([[-14, 43], [-13, 40], [-15, 45], [-10, 49]], {name: 'line 2'});
+ *
+ * //=linestring1
+ * //=linestring2
+ */
+function lineString(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    if (coordinates.length < 2) {
+        throw new Error("coordinates must be an array of two or more positions");
+    }
+    var geom = {
+        type: "LineString",
+        coordinates: coordinates,
+    };
+    return feature(geom, properties, options);
+}
+exports.lineString = lineString;
+/**
+ * Creates a {@link LineString} {@link FeatureCollection} from an Array of LineString coordinates.
+ *
+ * @name lineStrings
+ * @param {Array<Array<Array<number>>>} coordinates an array of LinearRings
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north]
+ * associated with the FeatureCollection
+ * @param {string|number} [options.id] Identifier associated with the FeatureCollection
+ * @returns {FeatureCollection<LineString>} LineString FeatureCollection
+ * @example
+ * var linestrings = turf.lineStrings([
+ *   [[-24, 63], [-23, 60], [-25, 65], [-20, 69]],
+ *   [[-14, 43], [-13, 40], [-15, 45], [-10, 49]]
+ * ]);
+ *
+ * //=linestrings
+ */
+function lineStrings(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    return featureCollection(coordinates.map(function (coords) {
+        return lineString(coords, properties);
+    }), options);
+}
+exports.lineStrings = lineStrings;
+/**
+ * Takes one or more {@link Feature|Features} and creates a {@link FeatureCollection}.
+ *
+ * @name featureCollection
+ * @param {Feature[]} features input features
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {FeatureCollection} FeatureCollection of Features
+ * @example
+ * var locationA = turf.point([-75.343, 39.984], {name: 'Location A'});
+ * var locationB = turf.point([-75.833, 39.284], {name: 'Location B'});
+ * var locationC = turf.point([-75.534, 39.123], {name: 'Location C'});
+ *
+ * var collection = turf.featureCollection([
+ *   locationA,
+ *   locationB,
+ *   locationC
+ * ]);
+ *
+ * //=collection
+ */
+function featureCollection(features, options) {
+    if (options === void 0) { options = {}; }
+    var fc = { type: "FeatureCollection" };
+    if (options.id) {
+        fc.id = options.id;
+    }
+    if (options.bbox) {
+        fc.bbox = options.bbox;
+    }
+    fc.features = features;
+    return fc;
+}
+exports.featureCollection = featureCollection;
+/**
+ * Creates a {@link Feature<MultiLineString>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name multiLineString
+ * @param {Array<Array<Array<number>>>} coordinates an array of LineStrings
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<MultiLineString>} a MultiLineString feature
+ * @throws {Error} if no coordinates are passed
+ * @example
+ * var multiLine = turf.multiLineString([[[0,0],[10,10]]]);
+ *
+ * //=multiLine
+ */
+function multiLineString(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    var geom = {
+        type: "MultiLineString",
+        coordinates: coordinates,
+    };
+    return feature(geom, properties, options);
+}
+exports.multiLineString = multiLineString;
+/**
+ * Creates a {@link Feature<MultiPoint>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name multiPoint
+ * @param {Array<Array<number>>} coordinates an array of Positions
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<MultiPoint>} a MultiPoint feature
+ * @throws {Error} if no coordinates are passed
+ * @example
+ * var multiPt = turf.multiPoint([[0,0],[10,10]]);
+ *
+ * //=multiPt
+ */
+function multiPoint(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    var geom = {
+        type: "MultiPoint",
+        coordinates: coordinates,
+    };
+    return feature(geom, properties, options);
+}
+exports.multiPoint = multiPoint;
+/**
+ * Creates a {@link Feature<MultiPolygon>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name multiPolygon
+ * @param {Array<Array<Array<Array<number>>>>} coordinates an array of Polygons
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<MultiPolygon>} a multipolygon feature
+ * @throws {Error} if no coordinates are passed
+ * @example
+ * var multiPoly = turf.multiPolygon([[[[0,0],[0,10],[10,10],[10,0],[0,0]]]]);
+ *
+ * //=multiPoly
+ *
+ */
+function multiPolygon(coordinates, properties, options) {
+    if (options === void 0) { options = {}; }
+    var geom = {
+        type: "MultiPolygon",
+        coordinates: coordinates,
+    };
+    return feature(geom, properties, options);
+}
+exports.multiPolygon = multiPolygon;
+/**
+ * Creates a {@link Feature<GeometryCollection>} based on a
+ * coordinate array. Properties can be added optionally.
+ *
+ * @name geometryCollection
+ * @param {Array<Geometry>} geometries an array of GeoJSON Geometries
+ * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+ * @param {Object} [options={}] Optional Parameters
+ * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+ * @param {string|number} [options.id] Identifier associated with the Feature
+ * @returns {Feature<GeometryCollection>} a GeoJSON GeometryCollection Feature
+ * @example
+ * var pt = turf.geometry("Point", [100, 0]);
+ * var line = turf.geometry("LineString", [[101, 0], [102, 1]]);
+ * var collection = turf.geometryCollection([pt, line]);
+ *
+ * // => collection
+ */
+function geometryCollection(geometries, properties, options) {
+    if (options === void 0) { options = {}; }
+    var geom = {
+        type: "GeometryCollection",
+        geometries: geometries,
+    };
+    return feature(geom, properties, options);
+}
+exports.geometryCollection = geometryCollection;
+/**
+ * Round number to precision
+ *
+ * @param {number} num Number
+ * @param {number} [precision=0] Precision
+ * @returns {number} rounded number
+ * @example
+ * turf.round(120.4321)
+ * //=120
+ *
+ * turf.round(120.4321, 2)
+ * //=120.43
+ */
+function round(num, precision) {
+    if (precision === void 0) { precision = 0; }
+    if (precision && !(precision >= 0)) {
+        throw new Error("precision must be a positive number");
+    }
+    var multiplier = Math.pow(10, precision || 0);
+    return Math.round(num * multiplier) / multiplier;
+}
+exports.round = round;
+/**
+ * Convert a distance measurement (assuming a spherical Earth) from radians to a more friendly unit.
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
+ *
+ * @name radiansToLength
+ * @param {number} radians in radians across the sphere
+ * @param {string} [units="kilometers"] can be degrees, radians, miles, or kilometers inches, yards, metres,
+ * meters, kilometres, kilometers.
+ * @returns {number} distance
+ */
+function radiansToLength(radians, units) {
+    if (units === void 0) { units = "kilometers"; }
+    var factor = exports.factors[units];
+    if (!factor) {
+        throw new Error(units + " units is invalid");
+    }
+    return radians * factor;
+}
+exports.radiansToLength = radiansToLength;
+/**
+ * Convert a distance measurement (assuming a spherical Earth) from a real-world unit into radians
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
+ *
+ * @name lengthToRadians
+ * @param {number} distance in real units
+ * @param {string} [units="kilometers"] can be degrees, radians, miles, or kilometers inches, yards, metres,
+ * meters, kilometres, kilometers.
+ * @returns {number} radians
+ */
+function lengthToRadians(distance, units) {
+    if (units === void 0) { units = "kilometers"; }
+    var factor = exports.factors[units];
+    if (!factor) {
+        throw new Error(units + " units is invalid");
+    }
+    return distance / factor;
+}
+exports.lengthToRadians = lengthToRadians;
+/**
+ * Convert a distance measurement (assuming a spherical Earth) from a real-world unit into degrees
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, centimeters, kilometres, feet
+ *
+ * @name lengthToDegrees
+ * @param {number} distance in real units
+ * @param {string} [units="kilometers"] can be degrees, radians, miles, or kilometers inches, yards, metres,
+ * meters, kilometres, kilometers.
+ * @returns {number} degrees
+ */
+function lengthToDegrees(distance, units) {
+    return radiansToDegrees(lengthToRadians(distance, units));
+}
+exports.lengthToDegrees = lengthToDegrees;
+/**
+ * Converts any bearing angle from the north line direction (positive clockwise)
+ * and returns an angle between 0-360 degrees (positive clockwise), 0 being the north line
+ *
+ * @name bearingToAzimuth
+ * @param {number} bearing angle, between -180 and +180 degrees
+ * @returns {number} angle between 0 and 360 degrees
+ */
+function bearingToAzimuth(bearing) {
+    var angle = bearing % 360;
+    if (angle < 0) {
+        angle += 360;
+    }
+    return angle;
+}
+exports.bearingToAzimuth = bearingToAzimuth;
+/**
+ * Converts an angle in radians to degrees
+ *
+ * @name radiansToDegrees
+ * @param {number} radians angle in radians
+ * @returns {number} degrees between 0 and 360 degrees
+ */
+function radiansToDegrees(radians) {
+    var degrees = radians % (2 * Math.PI);
+    return degrees * 180 / Math.PI;
+}
+exports.radiansToDegrees = radiansToDegrees;
+/**
+ * Converts an angle in degrees to radians
+ *
+ * @name degreesToRadians
+ * @param {number} degrees angle between 0 and 360 degrees
+ * @returns {number} angle in radians
+ */
+function degreesToRadians(degrees) {
+    var radians = degrees % 360;
+    return radians * Math.PI / 180;
+}
+exports.degreesToRadians = degreesToRadians;
+/**
+ * Converts a length to the requested unit.
+ * Valid units: miles, nauticalmiles, inches, yards, meters, metres, kilometers, centimeters, feet
+ *
+ * @param {number} length to be converted
+ * @param {Units} [originalUnit="kilometers"] of the length
+ * @param {Units} [finalUnit="kilometers"] returned unit
+ * @returns {number} the converted length
+ */
+function convertLength(length, originalUnit, finalUnit) {
+    if (originalUnit === void 0) { originalUnit = "kilometers"; }
+    if (finalUnit === void 0) { finalUnit = "kilometers"; }
+    if (!(length >= 0)) {
+        throw new Error("length must be a positive number");
+    }
+    return radiansToLength(lengthToRadians(length, originalUnit), finalUnit);
+}
+exports.convertLength = convertLength;
+/**
+ * Converts a area to the requested unit.
+ * Valid units: kilometers, kilometres, meters, metres, centimetres, millimeters, acres, miles, yards, feet, inches
+ * @param {number} area to be converted
+ * @param {Units} [originalUnit="meters"] of the distance
+ * @param {Units} [finalUnit="kilometers"] returned unit
+ * @returns {number} the converted distance
+ */
+function convertArea(area, originalUnit, finalUnit) {
+    if (originalUnit === void 0) { originalUnit = "meters"; }
+    if (finalUnit === void 0) { finalUnit = "kilometers"; }
+    if (!(area >= 0)) {
+        throw new Error("area must be a positive number");
+    }
+    var startFactor = exports.areaFactors[originalUnit];
+    if (!startFactor) {
+        throw new Error("invalid original units");
+    }
+    var finalFactor = exports.areaFactors[finalUnit];
+    if (!finalFactor) {
+        throw new Error("invalid final units");
+    }
+    return (area / startFactor) * finalFactor;
+}
+exports.convertArea = convertArea;
+/**
+ * isNumber
+ *
+ * @param {*} num Number to validate
+ * @returns {boolean} true/false
+ * @example
+ * turf.isNumber(123)
+ * //=true
+ * turf.isNumber('foo')
+ * //=false
+ */
+function isNumber(num) {
+    return !isNaN(num) && num !== null && !Array.isArray(num);
+}
+exports.isNumber = isNumber;
+/**
+ * isObject
+ *
+ * @param {*} input variable to validate
+ * @returns {boolean} true/false
+ * @example
+ * turf.isObject({elevation: 10})
+ * //=true
+ * turf.isObject('foo')
+ * //=false
+ */
+function isObject(input) {
+    return (!!input) && (input.constructor === Object);
+}
+exports.isObject = isObject;
+/**
+ * Validate BBox
+ *
+ * @private
+ * @param {Array<number>} bbox BBox to validate
+ * @returns {void}
+ * @throws Error if BBox is not valid
+ * @example
+ * validateBBox([-180, -40, 110, 50])
+ * //=OK
+ * validateBBox([-180, -40])
+ * //=Error
+ * validateBBox('Foo')
+ * //=Error
+ * validateBBox(5)
+ * //=Error
+ * validateBBox(null)
+ * //=Error
+ * validateBBox(undefined)
+ * //=Error
+ */
+function validateBBox(bbox) {
+    if (!bbox) {
+        throw new Error("bbox is required");
+    }
+    if (!Array.isArray(bbox)) {
+        throw new Error("bbox must be an Array");
+    }
+    if (bbox.length !== 4 && bbox.length !== 6) {
+        throw new Error("bbox must be an Array of 4 or 6 numbers");
+    }
+    bbox.forEach(function (num) {
+        if (!isNumber(num)) {
+            throw new Error("bbox must only contain numbers");
+        }
+    });
+}
+exports.validateBBox = validateBBox;
+/**
+ * Validate Id
+ *
+ * @private
+ * @param {string|number} id Id to validate
+ * @returns {void}
+ * @throws Error if Id is not valid
+ * @example
+ * validateId([-180, -40, 110, 50])
+ * //=Error
+ * validateId([-180, -40])
+ * //=Error
+ * validateId('Foo')
+ * //=OK
+ * validateId(5)
+ * //=OK
+ * validateId(null)
+ * //=Error
+ * validateId(undefined)
+ * //=Error
+ */
+function validateId(id) {
+    if (!id) {
+        throw new Error("id is required");
+    }
+    if (["string", "number"].indexOf(typeof id) === -1) {
+        throw new Error("id must be a number or a string");
+    }
+}
+exports.validateId = validateId;
+// Deprecated methods
+function radians2degrees() {
+    throw new Error("method has been renamed to `radiansToDegrees`");
+}
+exports.radians2degrees = radians2degrees;
+function degrees2radians() {
+    throw new Error("method has been renamed to `degreesToRadians`");
+}
+exports.degrees2radians = degrees2radians;
+function distanceToDegrees() {
+    throw new Error("method has been renamed to `lengthToDegrees`");
+}
+exports.distanceToDegrees = distanceToDegrees;
+function distanceToRadians() {
+    throw new Error("method has been renamed to `lengthToRadians`");
+}
+exports.distanceToRadians = distanceToRadians;
+function radiansToDistance() {
+    throw new Error("method has been renamed to `radiansToLength`");
+}
+exports.radiansToDistance = radiansToDistance;
+function bearingToAngle() {
+    throw new Error("method has been renamed to `bearingToAzimuth`");
+}
+exports.bearingToAngle = bearingToAngle;
+function convertDistance() {
+    throw new Error("method has been renamed to `convertLength`");
+}
+exports.convertDistance = convertDistance;
+
+},{}],20:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+// Taken from http://geomalgorithms.com/a02-_lines.html
+var invariant_1 = require("@turf/invariant");
+var meta_1 = require("@turf/meta");
+var distance_1 = require("@turf/distance");
+var rhumb_distance_1 = require("@turf/rhumb-distance");
+var helpers_1 = require("@turf/helpers");
+/**
+ * Returns the minimum distance between a {@link Point} and a {@link LineString}, being the distance from a line the
+ * minimum distance between the point and any segment of the `LineString`.
+ *
+ * @name pointToLineDistance
+ * @param {Feature<Point>|Array<number>} pt Feature or Geometry
+ * @param {Feature<LineString>} line GeoJSON Feature or Geometry
+ * @param {Object} [options={}] Optional parameters
+ * @param {string} [options.units='kilometers'] can be anything supported by turf/convertLength, eg degrees, radians, miles, or kilometers
+ * @param {string} [options.method='geodesic'] wehther to calculate the distance based on geodesic (spheroid) or planar (flat) method. Valid options are 'geodesic' or 'planar'.
+ * @returns {number} distance between point and line
+ * @example
+ * var pt = turf.point([0, 0]);
+ * var line = turf.lineString([[1, 1],[-1, 1]]);
+ *
+ * var distance = turf.pointToLineDistance(pt, line, {units: 'miles'});
+ * //=69.11854715938406
+ */
+function pointToLineDistance(pt, line, options) {
+    if (options === void 0) { options = {}; }
+    // Optional parameters
+    if (!options.method)
+        options.method = 'geodesic';
+    if (!options.units)
+        options.units = 'kilometers';
+    // validation
+    if (!pt)
+        throw new Error('pt is required');
+    if (Array.isArray(pt))
+        pt = helpers_1.point(pt);
+    else if (pt.type === 'Point')
+        pt = helpers_1.feature(pt);
+    else
+        invariant_1.featureOf(pt, 'Point', 'point');
+    if (!line)
+        throw new Error('line is required');
+    if (Array.isArray(line))
+        line = helpers_1.lineString(line);
+    else if (line.type === 'LineString')
+        line = helpers_1.feature(line);
+    else
+        invariant_1.featureOf(line, 'LineString', 'line');
+    var distance = Infinity;
+    var p = pt.geometry.coordinates;
+    meta_1.segmentEach(line, function (segment) {
+        var a = segment.geometry.coordinates[0];
+        var b = segment.geometry.coordinates[1];
+        var d = distanceToSegment(p, a, b, options);
+        if (d < distance)
+            distance = d;
+    });
+    return helpers_1.convertLength(distance, 'degrees', options.units);
+}
+/**
+ * Returns the distance between a point P on a segment AB.
+ *
+ * @private
+ * @param {Array<number>} p external point
+ * @param {Array<number>} a first segment point
+ * @param {Array<number>} b second segment point
+  * @param {Object} [options={}] Optional parameters
+ * @returns {number} distance
+ */
+function distanceToSegment(p, a, b, options) {
+    var v = [b[0] - a[0], b[1] - a[1]];
+    var w = [p[0] - a[0], p[1] - a[1]];
+    var c1 = dot(w, v);
+    if (c1 <= 0)
+        return calcDistance(p, a, { method: options.method, units: 'degrees' });
+    var c2 = dot(v, v);
+    if (c2 <= c1)
+        return calcDistance(p, b, { method: options.method, units: 'degrees' });
+    var b2 = c1 / c2;
+    var Pb = [a[0] + (b2 * v[0]), a[1] + (b2 * v[1])];
+    return calcDistance(p, Pb, { method: options.method, units: 'degrees' });
+}
+function dot(u, v) {
+    return (u[0] * v[0] + u[1] * v[1]);
+}
+function calcDistance(a, b, options) {
+    return options.method === 'planar' ? rhumb_distance_1.default(a, b, options) : distance_1.default(a, b, options);
+}
+exports.default = pointToLineDistance;
+
+},{"@turf/distance":21,"@turf/helpers":22,"@turf/invariant":23,"@turf/meta":24,"@turf/rhumb-distance":27}],21:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+var invariant_1 = require("@turf/invariant");
+var helpers_1 = require("@turf/helpers");
+//http://en.wikipedia.org/wiki/Haversine_formula
+//http://www.movable-type.co.uk/scripts/latlong.html
+/**
+ * Calculates the distance between two {@link Point|points} in degrees, radians, miles, or kilometers.
+ * This uses the [Haversine formula](http://en.wikipedia.org/wiki/Haversine_formula) to account for global curvature.
+ *
+ * @name distance
+ * @param {Coord} from origin point
+ * @param {Coord} to destination point
+ * @param {Object} [options={}] Optional parameters
+ * @param {string} [options.units='kilometers'] can be degrees, radians, miles, or kilometers
+ * @returns {number} distance between the two points
+ * @example
+ * var from = turf.point([-75.343, 39.984]);
+ * var to = turf.point([-75.534, 39.123]);
+ * var options = {units: 'miles'};
+ *
+ * var distance = turf.distance(from, to, options);
+ *
+ * //addToMap
+ * var addToMap = [from, to];
+ * from.properties.distance = distance;
+ * to.properties.distance = distance;
+ */
+function distance(from, to, options) {
+    if (options === void 0) { options = {}; }
+    var coordinates1 = invariant_1.getCoord(from);
+    var coordinates2 = invariant_1.getCoord(to);
+    var dLat = helpers_1.degreesToRadians((coordinates2[1] - coordinates1[1]));
+    var dLon = helpers_1.degreesToRadians((coordinates2[0] - coordinates1[0]));
+    var lat1 = helpers_1.degreesToRadians(coordinates1[1]);
+    var lat2 = helpers_1.degreesToRadians(coordinates2[1]);
+    var a = Math.pow(Math.sin(dLat / 2), 2) +
+        Math.pow(Math.sin(dLon / 2), 2) * Math.cos(lat1) * Math.cos(lat2);
+    return helpers_1.radiansToLength(2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)), options.units);
+}
+exports.default = distance;
+
+},{"@turf/helpers":22,"@turf/invariant":23}],22:[function(require,module,exports){
+arguments[4][19][0].apply(exports,arguments)
+},{"dup":19}],23:[function(require,module,exports){
+arguments[4][17][0].apply(exports,arguments)
+},{"@turf/helpers":22,"dup":17}],24:[function(require,module,exports){
+arguments[4][8][0].apply(exports,arguments)
+},{"@turf/helpers":22,"dup":8}],25:[function(require,module,exports){
 'use strict';
 
 function _interopDefault (ex) { return (ex && (typeof ex === 'object') && 'default' in ex) ? ex['default'] : ex; }
@@ -3834,7 +4595,96 @@ function rewindPolygon(coords, reverse) {
 module.exports = rewind;
 module.exports.default = rewind;
 
-},{"@turf/boolean-clockwise":8,"@turf/clone":12,"@turf/helpers":15,"@turf/invariant":16,"@turf/meta":17}],20:[function(require,module,exports){
+},{"@turf/boolean-clockwise":9,"@turf/clone":13,"@turf/helpers":16,"@turf/invariant":17,"@turf/meta":26}],26:[function(require,module,exports){
+arguments[4][8][0].apply(exports,arguments)
+},{"@turf/helpers":16,"dup":8}],27:[function(require,module,exports){
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+// https://en.wikipedia.org/wiki/Rhumb_line
+var helpers_1 = require("@turf/helpers");
+var invariant_1 = require("@turf/invariant");
+/**
+ * Calculates the distance along a rhumb line between two {@link Point|points} in degrees, radians,
+ * miles, or kilometers.
+ *
+ * @name rhumbDistance
+ * @param {Coord} from origin point
+ * @param {Coord} to destination point
+ * @param {Object} [options] Optional parameters
+ * @param {string} [options.units="kilometers"] can be degrees, radians, miles, or kilometers
+ * @returns {number} distance between the two points
+ * @example
+ * var from = turf.point([-75.343, 39.984]);
+ * var to = turf.point([-75.534, 39.123]);
+ * var options = {units: 'miles'};
+ *
+ * var distance = turf.rhumbDistance(from, to, options);
+ *
+ * //addToMap
+ * var addToMap = [from, to];
+ * from.properties.distance = distance;
+ * to.properties.distance = distance;
+ */
+function rhumbDistance(from, to, options) {
+    if (options === void 0) { options = {}; }
+    var origin = invariant_1.getCoord(from);
+    var destination = invariant_1.getCoord(to);
+    // compensate the crossing of the 180th meridian (https://macwright.org/2016/09/26/the-180th-meridian.html)
+    // solution from https://github.com/mapbox/mapbox-gl-js/issues/3250#issuecomment-294887678
+    destination[0] += (destination[0] - origin[0] > 180) ? -360 : (origin[0] - destination[0] > 180) ? 360 : 0;
+    var distanceInMeters = calculateRhumbDistance(origin, destination);
+    var distance = helpers_1.convertLength(distanceInMeters, "meters", options.units);
+    return distance;
+}
+/**
+ * Returns the distance travelling from ‘this’ point to destination point along a rhumb line.
+ * Adapted from Geodesy: https://github.com/chrisveness/geodesy/blob/master/latlon-spherical.js
+ *
+ * @private
+ * @param   {Array<number>} origin point.
+ * @param   {Array<number>} destination point.
+ * @param   {number} [radius=6371e3] - (Mean) radius of earth (defaults to radius in metres).
+ * @returns {number} Distance in km between this point and destination point (same units as radius).
+ *
+ * @example
+ *     var p1 = new LatLon(51.127, 1.338);
+ *     var p2 = new LatLon(50.964, 1.853);
+ *     var d = p1.distanceTo(p2); // 40.31 km
+ */
+function calculateRhumbDistance(origin, destination, radius) {
+    // φ => phi
+    // λ => lambda
+    // ψ => psi
+    // Δ => Delta
+    // δ => delta
+    // θ => theta
+    radius = (radius === undefined) ? helpers_1.earthRadius : Number(radius);
+    // see www.edwilliams.org/avform.htm#Rhumb
+    var R = radius;
+    var phi1 = origin[1] * Math.PI / 180;
+    var phi2 = destination[1] * Math.PI / 180;
+    var DeltaPhi = phi2 - phi1;
+    var DeltaLambda = Math.abs(destination[0] - origin[0]) * Math.PI / 180;
+    // if dLon over 180° take shorter rhumb line across the anti-meridian:
+    if (DeltaLambda > Math.PI) {
+        DeltaLambda -= 2 * Math.PI;
+    }
+    // on Mercator projection, longitude distances shrink by latitude; q is the 'stretch factor'
+    // q becomes ill-conditioned along E-W line (0/0); use empirical tolerance to avoid it
+    var DeltaPsi = Math.log(Math.tan(phi2 / 2 + Math.PI / 4) / Math.tan(phi1 / 2 + Math.PI / 4));
+    var q = Math.abs(DeltaPsi) > 10e-12 ? DeltaPhi / DeltaPsi : Math.cos(phi1);
+    // distance is pythagoras on 'stretched' Mercator projection
+    var delta = Math.sqrt(DeltaPhi * DeltaPhi + q * q * DeltaLambda * DeltaLambda); // angular distance in radians
+    var dist = delta * R;
+    return dist;
+}
+exports.default = rhumbDistance;
+
+},{"@turf/helpers":28,"@turf/invariant":29}],28:[function(require,module,exports){
+arguments[4][19][0].apply(exports,arguments)
+},{"dup":19}],29:[function(require,module,exports){
+arguments[4][17][0].apply(exports,arguments)
+},{"@turf/helpers":28,"dup":17}],30:[function(require,module,exports){
 (function (global){
 'use strict';
 
@@ -4328,7 +5178,7 @@ var objectKeys = Object.keys || function (obj) {
 };
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"util/":65}],21:[function(require,module,exports){
+},{"util/":75}],31:[function(require,module,exports){
 'use strict'
 
 exports.byteLength = byteLength
@@ -4446,9 +5296,9 @@ function fromByteArray (uint8) {
   return parts.join('')
 }
 
-},{}],22:[function(require,module,exports){
+},{}],32:[function(require,module,exports){
 
-},{}],23:[function(require,module,exports){
+},{}],33:[function(require,module,exports){
 (function (process,Buffer){
 'use strict';
 /* eslint camelcase: "off" */
@@ -4860,7 +5710,7 @@ Zlib.prototype._reset = function () {
 
 exports.Zlib = Zlib;
 }).call(this,require('_process'),require("buffer").Buffer)
-},{"_process":45,"assert":20,"buffer":25,"pako/lib/zlib/constants":34,"pako/lib/zlib/deflate.js":36,"pako/lib/zlib/inflate.js":38,"pako/lib/zlib/zstream":42}],24:[function(require,module,exports){
+},{"_process":55,"assert":30,"buffer":35,"pako/lib/zlib/constants":44,"pako/lib/zlib/deflate.js":46,"pako/lib/zlib/inflate.js":48,"pako/lib/zlib/zstream":52}],34:[function(require,module,exports){
 (function (process){
 'use strict';
 
@@ -5472,7 +6322,7 @@ util.inherits(DeflateRaw, Zlib);
 util.inherits(InflateRaw, Zlib);
 util.inherits(Unzip, Zlib);
 }).call(this,require('_process'))
-},{"./binding":23,"_process":45,"assert":20,"buffer":25,"stream":60,"util":65}],25:[function(require,module,exports){
+},{"./binding":33,"_process":55,"assert":30,"buffer":35,"stream":70,"util":75}],35:[function(require,module,exports){
 /*!
  * The buffer module from node.js, for the browser.
  *
@@ -7210,7 +8060,7 @@ function numberIsNaN (obj) {
   return obj !== obj // eslint-disable-line no-self-compare
 }
 
-},{"base64-js":21,"ieee754":28}],26:[function(require,module,exports){
+},{"base64-js":31,"ieee754":38}],36:[function(require,module,exports){
 (function (Buffer){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -7321,7 +8171,7 @@ function objectToString(o) {
 }
 
 }).call(this,{"isBuffer":require("../../is-buffer/index.js")})
-},{"../../is-buffer/index.js":30}],27:[function(require,module,exports){
+},{"../../is-buffer/index.js":40}],37:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -7842,7 +8692,7 @@ function functionBindPolyfill(context) {
   };
 }
 
-},{}],28:[function(require,module,exports){
+},{}],38:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = (nBytes * 8) - mLen - 1
@@ -7928,7 +8778,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],29:[function(require,module,exports){
+},{}],39:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -7953,7 +8803,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],30:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 /*!
  * Determine if an object is a Buffer
  *
@@ -7976,14 +8826,14 @@ function isSlowBuffer (obj) {
   return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
 }
 
-},{}],31:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 var toString = {}.toString;
 
 module.exports = Array.isArray || function (arr) {
   return toString.call(arr) == '[object Array]';
 };
 
-},{}],32:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 'use strict';
 
 
@@ -8090,7 +8940,7 @@ exports.setTyped = function (on) {
 
 exports.setTyped(TYPED_OK);
 
-},{}],33:[function(require,module,exports){
+},{}],43:[function(require,module,exports){
 'use strict';
 
 // Note: adler32 takes 12% for level 0 and 2% for level 6.
@@ -8143,7 +8993,7 @@ function adler32(adler, buf, len, pos) {
 
 module.exports = adler32;
 
-},{}],34:[function(require,module,exports){
+},{}],44:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -8213,7 +9063,7 @@ module.exports = {
   //Z_NULL:                 null // Use -1 or null inline, depending on var type
 };
 
-},{}],35:[function(require,module,exports){
+},{}],45:[function(require,module,exports){
 'use strict';
 
 // Note: we can't get significant speed boost here.
@@ -8274,7 +9124,7 @@ function crc32(crc, buf, len, pos) {
 
 module.exports = crc32;
 
-},{}],36:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -10150,7 +11000,7 @@ exports.deflatePrime = deflatePrime;
 exports.deflateTune = deflateTune;
 */
 
-},{"../utils/common":32,"./adler32":33,"./crc32":35,"./messages":40,"./trees":41}],37:[function(require,module,exports){
+},{"../utils/common":42,"./adler32":43,"./crc32":45,"./messages":50,"./trees":51}],47:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -10497,7 +11347,7 @@ module.exports = function inflate_fast(strm, start) {
   return;
 };
 
-},{}],38:[function(require,module,exports){
+},{}],48:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -12055,7 +12905,7 @@ exports.inflateSyncPoint = inflateSyncPoint;
 exports.inflateUndermine = inflateUndermine;
 */
 
-},{"../utils/common":32,"./adler32":33,"./crc32":35,"./inffast":37,"./inftrees":39}],39:[function(require,module,exports){
+},{"../utils/common":42,"./adler32":43,"./crc32":45,"./inffast":47,"./inftrees":49}],49:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -12400,7 +13250,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
   return 0;
 };
 
-},{"../utils/common":32}],40:[function(require,module,exports){
+},{"../utils/common":42}],50:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -12434,7 +13284,7 @@ module.exports = {
   '-6':   'incompatible version' /* Z_VERSION_ERROR (-6) */
 };
 
-},{}],41:[function(require,module,exports){
+},{}],51:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -13656,7 +14506,7 @@ exports._tr_flush_block  = _tr_flush_block;
 exports._tr_tally = _tr_tally;
 exports._tr_align = _tr_align;
 
-},{"../utils/common":32}],42:[function(require,module,exports){
+},{"../utils/common":42}],52:[function(require,module,exports){
 'use strict';
 
 // (C) 1995-2013 Jean-loup Gailly and Mark Adler
@@ -13705,7 +14555,7 @@ function ZStream() {
 
 module.exports = ZStream;
 
-},{}],43:[function(require,module,exports){
+},{}],53:[function(require,module,exports){
 'use strict';
 
 module.exports = Pbf;
@@ -14325,7 +15175,7 @@ function writeUtf8(buf, str, pos) {
     return pos;
 }
 
-},{"ieee754":28}],44:[function(require,module,exports){
+},{"ieee754":38}],54:[function(require,module,exports){
 (function (process){
 'use strict';
 
@@ -14373,7 +15223,7 @@ function nextTick(fn, arg1, arg2, arg3) {
 
 
 }).call(this,require('_process'))
-},{"_process":45}],45:[function(require,module,exports){
+},{"_process":55}],55:[function(require,module,exports){
 // shim for using process in browser
 var process = module.exports = {};
 
@@ -14559,10 +15409,10 @@ process.chdir = function (dir) {
 };
 process.umask = function() { return 0; };
 
-},{}],46:[function(require,module,exports){
+},{}],56:[function(require,module,exports){
 module.exports = require('./lib/_stream_duplex.js');
 
-},{"./lib/_stream_duplex.js":47}],47:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":57}],57:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -14687,7 +15537,7 @@ function forEach(xs, f) {
     f(xs[i], i);
   }
 }
-},{"./_stream_readable":49,"./_stream_writable":51,"core-util-is":26,"inherits":29,"process-nextick-args":44}],48:[function(require,module,exports){
+},{"./_stream_readable":59,"./_stream_writable":61,"core-util-is":36,"inherits":39,"process-nextick-args":54}],58:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -14735,7 +15585,7 @@ function PassThrough(options) {
 PassThrough.prototype._transform = function (chunk, encoding, cb) {
   cb(null, chunk);
 };
-},{"./_stream_transform":50,"core-util-is":26,"inherits":29}],49:[function(require,module,exports){
+},{"./_stream_transform":60,"core-util-is":36,"inherits":39}],59:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -15753,7 +16603,7 @@ function indexOf(xs, x) {
   return -1;
 }
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./_stream_duplex":47,"./internal/streams/BufferList":52,"./internal/streams/destroy":53,"./internal/streams/stream":54,"_process":45,"core-util-is":26,"events":27,"inherits":29,"isarray":31,"process-nextick-args":44,"safe-buffer":59,"string_decoder/":61,"util":22}],50:[function(require,module,exports){
+},{"./_stream_duplex":57,"./internal/streams/BufferList":62,"./internal/streams/destroy":63,"./internal/streams/stream":64,"_process":55,"core-util-is":36,"events":37,"inherits":39,"isarray":41,"process-nextick-args":54,"safe-buffer":69,"string_decoder/":71,"util":32}],60:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -15968,7 +16818,7 @@ function done(stream, er, data) {
 
   return stream.push(null);
 }
-},{"./_stream_duplex":47,"core-util-is":26,"inherits":29}],51:[function(require,module,exports){
+},{"./_stream_duplex":57,"core-util-is":36,"inherits":39}],61:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -16648,7 +17498,7 @@ Writable.prototype._destroy = function (err, cb) {
   cb(err);
 };
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./_stream_duplex":47,"./internal/streams/destroy":53,"./internal/streams/stream":54,"_process":45,"core-util-is":26,"inherits":29,"process-nextick-args":44,"safe-buffer":59,"util-deprecate":62}],52:[function(require,module,exports){
+},{"./_stream_duplex":57,"./internal/streams/destroy":63,"./internal/streams/stream":64,"_process":55,"core-util-is":36,"inherits":39,"process-nextick-args":54,"safe-buffer":69,"util-deprecate":72}],62:[function(require,module,exports){
 'use strict';
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
@@ -16728,7 +17578,7 @@ if (util && util.inspect && util.inspect.custom) {
     return this.constructor.name + ' ' + obj;
   };
 }
-},{"safe-buffer":59,"util":22}],53:[function(require,module,exports){
+},{"safe-buffer":69,"util":32}],63:[function(require,module,exports){
 'use strict';
 
 /*<replacement>*/
@@ -16803,13 +17653,13 @@ module.exports = {
   destroy: destroy,
   undestroy: undestroy
 };
-},{"process-nextick-args":44}],54:[function(require,module,exports){
+},{"process-nextick-args":54}],64:[function(require,module,exports){
 module.exports = require('events').EventEmitter;
 
-},{"events":27}],55:[function(require,module,exports){
+},{"events":37}],65:[function(require,module,exports){
 module.exports = require('./readable').PassThrough
 
-},{"./readable":56}],56:[function(require,module,exports){
+},{"./readable":66}],66:[function(require,module,exports){
 exports = module.exports = require('./lib/_stream_readable.js');
 exports.Stream = exports;
 exports.Readable = exports;
@@ -16818,13 +17668,13 @@ exports.Duplex = require('./lib/_stream_duplex.js');
 exports.Transform = require('./lib/_stream_transform.js');
 exports.PassThrough = require('./lib/_stream_passthrough.js');
 
-},{"./lib/_stream_duplex.js":47,"./lib/_stream_passthrough.js":48,"./lib/_stream_readable.js":49,"./lib/_stream_transform.js":50,"./lib/_stream_writable.js":51}],57:[function(require,module,exports){
+},{"./lib/_stream_duplex.js":57,"./lib/_stream_passthrough.js":58,"./lib/_stream_readable.js":59,"./lib/_stream_transform.js":60,"./lib/_stream_writable.js":61}],67:[function(require,module,exports){
 module.exports = require('./readable').Transform
 
-},{"./readable":56}],58:[function(require,module,exports){
+},{"./readable":66}],68:[function(require,module,exports){
 module.exports = require('./lib/_stream_writable.js');
 
-},{"./lib/_stream_writable.js":51}],59:[function(require,module,exports){
+},{"./lib/_stream_writable.js":61}],69:[function(require,module,exports){
 /* eslint-disable node/no-deprecated-api */
 var buffer = require('buffer')
 var Buffer = buffer.Buffer
@@ -16888,7 +17738,7 @@ SafeBuffer.allocUnsafeSlow = function (size) {
   return buffer.SlowBuffer(size)
 }
 
-},{"buffer":25}],60:[function(require,module,exports){
+},{"buffer":35}],70:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -17017,7 +17867,7 @@ Stream.prototype.pipe = function(dest, options) {
   return dest;
 };
 
-},{"events":27,"inherits":29,"readable-stream/duplex.js":46,"readable-stream/passthrough.js":55,"readable-stream/readable.js":56,"readable-stream/transform.js":57,"readable-stream/writable.js":58}],61:[function(require,module,exports){
+},{"events":37,"inherits":39,"readable-stream/duplex.js":56,"readable-stream/passthrough.js":65,"readable-stream/readable.js":66,"readable-stream/transform.js":67,"readable-stream/writable.js":68}],71:[function(require,module,exports){
 'use strict';
 
 var Buffer = require('safe-buffer').Buffer;
@@ -17290,7 +18140,7 @@ function simpleWrite(buf) {
 function simpleEnd(buf) {
   return buf && buf.length ? this.write(buf) : '';
 }
-},{"safe-buffer":59}],62:[function(require,module,exports){
+},{"safe-buffer":69}],72:[function(require,module,exports){
 (function (global){
 
 /**
@@ -17361,16 +18211,16 @@ function config (name) {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],63:[function(require,module,exports){
-arguments[4][29][0].apply(exports,arguments)
-},{"dup":29}],64:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
+arguments[4][39][0].apply(exports,arguments)
+},{"dup":39}],74:[function(require,module,exports){
 module.exports = function isBuffer(arg) {
   return arg && typeof arg === 'object'
     && typeof arg.copy === 'function'
     && typeof arg.fill === 'function'
     && typeof arg.readUInt8 === 'function';
 }
-},{}],65:[function(require,module,exports){
+},{}],75:[function(require,module,exports){
 (function (process,global){
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -17960,5 +18810,5 @@ function hasOwnProperty(obj, prop) {
 }
 
 }).call(this,require('_process'),typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"./support/isBuffer":64,"_process":45,"inherits":63}]},{},[1])(1)
+},{"./support/isBuffer":74,"_process":55,"inherits":73}]},{},[1])(1)
 });
